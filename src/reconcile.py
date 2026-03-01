@@ -16,7 +16,7 @@ from pydantic_core import PydanticUndefined
 
 # id(FieldInfo) → list[Dependency]: registered at decorator time, consumed
 # by __set_name__ before Pydantic's complete_model_class() reads annotations.
-_registry: dict[int, list[Dependency]] = {}
+_registry: dict[int, list["Dependency"]] = {}
 
 
 # Inherit property so Pydantic treats us as a descriptor rather than
