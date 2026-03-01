@@ -2,7 +2,23 @@
 channels = ["https://repo.prefix.dev/meta-forge", "conda-forge"]
 name = "reconcile"
 platforms = ["linux-64"]
+preview = ["pixi-build"]
 version = "0.1.0" # x-release-please-version
+
+[package]
+name = "reconcile"
+version = "0.1.0"
+
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+
+[package.host-dependencies]
+python = ">=3.12"
+hatchling = "*"
+
+[package.run-dependencies]
+python = ">=3.12"
+pydantic = ">=2"
 
 [tasks]
 test = "pytest tests/"
