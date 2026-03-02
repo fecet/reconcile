@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/fecet/reconcile/compare/reconcile-v0.2.0...reconcile-v0.2.1) (2026-03-02)
+
+
+### Bug Fixes
+
+* **ci:** disable --locked flag for lockfile update job ([5eb17bd](https://github.com/fecet/reconcile/commit/5eb17bdb9b0770eccdf111b155ec220e6d46e1fd))
+
 ## [0.2.0](https://github.com/fecet/reconcile/compare/reconcile-v0.1.0...reconcile-v0.2.0) (2026-03-01)
 
 
