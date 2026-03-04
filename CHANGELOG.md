@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/fecet/reconcile/compare/reconcile-v0.2.1...reconcile-v0.2.2) (2026-03-04)
+
+
+### Bug Fixes
+
+* add x-release-please-version to package version ([731993d](https://github.com/fecet/reconcile/commit/731993d40d97c85cf2df3c9bbee3c1fbda265f02))
+
 ## [0.2.1](https://github.com/fecet/reconcile/compare/reconcile-v0.2.0...reconcile-v0.2.1) (2026-03-02)
 
 
