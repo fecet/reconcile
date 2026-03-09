@@ -41,11 +41,15 @@ class Dependency(property):
                 continue
             for dep in _registry.pop(id(fi), []):
                 dep.field_name = fname
-                dep.required = fi.default is PydanticUndefined
+                has_factory = fi.default_factory is not None
+                dep.required = fi.default is PydanticUndefined and not has_factory
                 if dep.required:
                     fi.default = None
                 ann[fname] = typing.Annotated[ann[fname], fi, dep]
-                setattr(owner, fname, fi.default)
+                if has_factory:
+                    delattr(owner, fname)
+                else:
+                    setattr(owner, fname, fi.default)
         owner.__annotations__ = ann
 
 

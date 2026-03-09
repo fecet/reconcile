@@ -209,11 +209,12 @@ def test_subclass_ambiguity_error():
 
 
 def test_field_default_as_fallback():
-    """11. Field default is used when dependency source is absent."""
+    """11. Field(default=...) and Field(default_factory=...) as fallbacks."""
 
     class WithDefaults(BaseModel):
         num_steps: int = Field(default=1000)
         lr: float = Field(default=0.001)
+        tags: list[str] = Field(default_factory=list)
 
         @dependency(num_steps)
         def _(self, t: TrainingSpec) -> int:
@@ -223,14 +224,28 @@ def test_field_default_as_fallback():
         def _(self, o: AdamWOptimizerSpec) -> float:
             return o.lr
 
-    # Both sources present → derived values win
+        @dependency(tags)
+        def _(self, t: TrainingSpec) -> list[str]:
+            return [f"steps={t.num_steps}"]
+
+    # All sources present → derived values win
     spec, _, _ = reconcile(
         WithDefaults(), TrainingSpec(num_steps=5000), AdamWOptimizerSpec(lr=0.01)
     )
     assert spec.num_steps == 5000
     assert spec.lr == 0.01
+    assert spec.tags == ["steps=5000"]
 
-    # Both sources absent → Field defaults used as fallback
+    # All sources absent → Field defaults used as fallback
     (spec,) = reconcile(WithDefaults())
     assert spec.num_steps == 1000
     assert spec.lr == 0.001
+    assert spec.tags == []
+
+    # Manual override wins over dependency
+    spec, _, _ = reconcile(
+        WithDefaults(tags=["manual"]),
+        TrainingSpec(num_steps=5000),
+        AdamWOptimizerSpec(lr=0.01),
+    )
+    assert spec.tags == ["manual"]
