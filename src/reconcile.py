@@ -13,6 +13,11 @@ from pydantic import BaseModel, TypeAdapter
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+try:
+    from annotationlib import Format as _AnnotationFormat
+except ImportError:
+    _AnnotationFormat = None
+
 
 # id(FieldInfo) → list[Dependency]: registered at decorator time, consumed
 # by __set_name__ before Pydantic's complete_model_class() reads annotations.
@@ -92,7 +97,12 @@ class Pool:
         raise KeyError(requested)
 
     def call(self, fn: Callable[..., Any]) -> Any:
-        hints = typing.get_type_hints(fn)
+        ns = {cls.__name__: cls for cls in self._data}
+        ns.update(getattr(fn, "__globals__", {}))
+        kw: dict[str, Any] = {}
+        if _AnnotationFormat is not None:
+            kw["format"] = _AnnotationFormat.FORWARDREF
+        hints = typing.get_type_hints(fn, globalns=ns, **kw)
         hints.pop("return", None)
         try:
             kwargs = {p: self.resolve(t) for p, t in hints.items()}

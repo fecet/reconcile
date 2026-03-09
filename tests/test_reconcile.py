@@ -208,6 +208,23 @@ def test_subclass_ambiguity_error():
     assert a.name == "MSELoss"  # already set, not overwritten
 
 
+def test_string_annotation_resolved_from_pool():
+    """Forward-ref string annotations are resolved via pool namespace."""
+
+    class Alpha(BaseModel):
+        value: int = 10
+
+    class Beta(BaseModel):
+        derived: int = Field()
+
+        @dependency(derived)
+        def _(self, a: "Alpha") -> int:
+            return a.value * 2
+
+    beta, _ = reconcile(Beta(), Alpha(value=7))
+    assert beta.derived == 14
+
+
 def test_field_default_as_fallback():
     """11. Field(default=...) and Field(default_factory=...) as fallbacks."""
 
