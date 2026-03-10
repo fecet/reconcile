@@ -19,52 +19,54 @@ except ImportError:
     _AnnotationFormat = None
 
 
-# id(FieldInfo) → list[Dependency]: registered at decorator time, consumed
-# by __set_name__ before Pydantic's complete_model_class() reads annotations.
-_registry: dict[int, list["Dependency"]] = {}
-
-
 # Inherit property so Pydantic treats us as a descriptor rather than
 # replacing the attribute with ModelPrivateAttr during model creation.
 class Dependency(property):
     fn: Callable[..., Any]
     field_name: str | None
     required: bool
+    target: Any
 
-    def __init__(self, fn: Callable[..., Any], *, sentinel: Any = None) -> None:
+    _pending: typing.ClassVar[dict[int, list["Dependency"]]] = {}
+
+    def __init__(self, fn: Callable[..., Any], *, target: Any = None) -> None:
         self.fn = fn
         self.field_name = None
         self.required = False
-        if isinstance(sentinel, FieldInfo):
-            _registry.setdefault(id(sentinel), []).append(self)
+        self.target = target
+        if isinstance(target, FieldInfo):
+            self._pending.setdefault(id(target), []).append(self)
 
     def __set_name__(self, owner: type, name: str) -> None:
         ann = dict(owner.__annotations__)
-        for fname in ann:
+        for fname, hint in ann.items():
             fi = owner.__dict__.get(fname)
             if not isinstance(fi, FieldInfo):
                 continue
-            for dep in _registry.pop(id(fi), []):
+            deps = self._pending.pop(id(fi), [])
+            if not deps:
+                continue
+            has_factory = fi.default_factory is not None
+            for dep in deps:
                 dep.field_name = fname
-                has_factory = fi.default_factory is not None
                 dep.required = fi.default is PydanticUndefined and not has_factory
-                if dep.required:
-                    fi.default = None
-                ann[fname] = typing.Annotated[ann[fname], fi, dep]
-                if has_factory:
-                    delattr(owner, fname)
-                else:
-                    setattr(owner, fname, fi.default)
+            if not has_factory and deps[0].required:
+                fi.default = None
+            ann[fname] = typing.Annotated[hint, fi, *deps]
+            if has_factory:
+                delattr(owner, fname)
+            else:
+                setattr(owner, fname, fi.default)
         owner.__annotations__ = ann
 
 
 def dependency(arg: Any = None, /) -> Any:
     if callable(arg) and not isinstance(arg, FieldInfo):
         return Dependency(arg)
-    sentinel = arg
+    target = arg
 
     def decorator(fn: Callable[..., Any]) -> Any:
-        return Dependency(fn, sentinel=sentinel)
+        return Dependency(fn, target=target)
 
     return decorator
 

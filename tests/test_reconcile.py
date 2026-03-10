@@ -266,3 +266,26 @@ def test_field_default_as_fallback():
         AdamWOptimizerSpec(lr=0.01),
     )
     assert spec.tags == ["manual"]
+
+
+def test_multiple_deps_on_factory_field():
+    """Multiple @dependency on same Field(default_factory=...) field."""
+
+    class Multi(BaseModel):
+        items: list[str] = Field(default_factory=list)
+
+        @dependency(items)
+        def _a(self, t: TrainingSpec) -> list[str]:
+            return [f"steps={t.num_steps}"]
+
+        @dependency(items)
+        def _b(self, o: AdamWOptimizerSpec) -> list[str]:
+            return [f"lr={o.lr}"]
+
+    spec, _, _ = reconcile(
+        Multi(), TrainingSpec(num_steps=5000), AdamWOptimizerSpec(lr=0.01)
+    )
+    assert spec.items in [["steps=5000"], ["lr=0.01"]]
+
+    (spec,) = reconcile(Multi())
+    assert spec.items == []
