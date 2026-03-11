@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field
 from models.training import (
     AdamWOptimizerSpec,
     CrossEntropyLoss,
+    DataLoaderSpec,
     LinearWarmupSchedulerSpec,
+    MAELoss,
+    MSELoss,
+    NeedsLoss,
     TrainingSpec,
 )
 
@@ -98,22 +102,6 @@ class TestErrors:
             )
 
     def test_subclass_ambiguity(self):
-        class BaseLoss(BaseModel):
-            weight: float = 1.0
-
-        class MSELoss(BaseLoss):
-            pass
-
-        class MAELoss(BaseLoss):
-            pass
-
-        class NeedsLoss(BaseModel):
-            name: str = Field()
-
-            @dependency(name)
-            def _(self, loss: BaseLoss) -> str:
-                return type(loss).__name__
-
         with pytest.raises(TypeError, match="Ambiguous"):
             reconcile(NeedsLoss(), MSELoss(), MAELoss())
 
@@ -126,29 +114,15 @@ class TestErrors:
 
 class TestFeatures:
     def test_field_constraints_validated(self):
-        class Bounded(BaseModel):
-            value: int = Field(ge=0, le=100)
+        with pytest.raises(ValueError, match="less than or equal to 10000"):
+            reconcile(DataLoaderSpec(), TrainingSpec(num_steps=99999))
 
-            @dependency(value)
-            def _(self, t: TrainingSpec) -> int:
-                return t.num_steps
-
-        with pytest.raises(ValueError, match="less than or equal to 100"):
-            reconcile(Bounded(), TrainingSpec(num_steps=9999))
-
-        assert_reconciled(Bounded(), TrainingSpec(num_steps=50), expect={0: {"value": 50}})
+        assert_reconciled(
+            DataLoaderSpec(), TrainingSpec(num_steps=50), AdamWOptimizerSpec(),
+            expect={0: {"batch_size": 50}},
+        )
 
     def test_subclass_resolution(self):
-        class BaseLoss(BaseModel):
-            weight: float = 1.0
-
-        class MSELoss(BaseLoss):
-            reduction: str = "mean"
-
-            @dependency
-            def _check(self, _t: TrainingSpec) -> None:
-                pass
-
         loss, _ = assert_reconciled(MSELoss(), TrainingSpec(), expect={0: {"weight": 1.0}})
         assert isinstance(loss, MSELoss)
 
@@ -166,37 +140,20 @@ class TestFeatures:
         assert_reconciled(Beta(), Alpha(value=7), expect={0: {"derived": 14}})
 
     def test_field_default_as_fallback(self):
-        class WithDefaults(BaseModel):
-            num_steps: int = Field(default=1000)
-            lr: float = Field(default=0.001)
-            tags: list[str] = Field(default_factory=list)
-
-            @dependency(num_steps)
-            def _(self, t: TrainingSpec) -> int:
-                return t.num_steps
-
-            @dependency(lr)
-            def _(self, o: AdamWOptimizerSpec) -> float:
-                return o.lr
-
-            @dependency(tags)
-            def _(self, t: TrainingSpec) -> list[str]:
-                return [f"steps={t.num_steps}"]
-
         assert_reconciled(
-            WithDefaults(),
+            DataLoaderSpec(),
             TrainingSpec(num_steps=5000),
             AdamWOptimizerSpec(lr=0.01),
-            expect={0: {"num_steps": 5000, "lr": 0.01, "tags": ["steps=5000"]}},
+            expect={0: {"batch_size": 5000, "effective_lr": 0.01, "tags": ["steps=5000"]}},
         )
 
         assert_reconciled(
-            WithDefaults(),
-            expect={0: {"num_steps": 1000, "lr": 0.001, "tags": []}},
+            DataLoaderSpec(),
+            expect={0: {"batch_size": 32, "effective_lr": 0.001, "tags": []}},
         )
 
         assert_reconciled(
-            WithDefaults(tags=["manual"]),
+            DataLoaderSpec(tags=["manual"]),
             TrainingSpec(num_steps=5000),
             AdamWOptimizerSpec(lr=0.01),
             expect={0: {"tags": ["manual"]}},

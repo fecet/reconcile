@@ -10,7 +10,19 @@ class TrainingSpec(BaseModel):
     num_steps: int = 1000
 
 
-class CrossEntropyLoss(BaseModel):
+class BaseLoss(BaseModel):
+    weight: float = 1.0
+
+
+class MSELoss(BaseLoss):
+    reduction: str = "mean"
+
+
+class MAELoss(BaseLoss):
+    pass
+
+
+class CrossEntropyLoss(BaseLoss):
     ignore_index: int = -100
     compile: bool = False
 
@@ -44,3 +56,31 @@ class LinearWarmupSchedulerSpec(BaseModel):
     @dependency(lr)
     def _(self, o: AdamWOptimizerSpec) -> float:
         return o.lr
+
+
+class NeedsLoss(BaseModel):
+    name: str = Field()
+
+    @dependency(name)
+    def _(self, loss: BaseLoss) -> str:
+        return type(loss).__name__
+
+
+class DataLoaderSpec(BaseModel):
+    batch_size: int = Field(default=32, ge=1, le=10000)
+    effective_lr: float = Field(default=0.001)
+    tags: list[str] = Field(default_factory=list)
+
+    @dependency(batch_size)
+    def _(self, t: TrainingSpec) -> int:
+        return t.num_steps
+
+    @dependency(effective_lr)
+    def _(self, o: AdamWOptimizerSpec) -> float:
+        return o.lr
+
+    @dependency(tags)
+    def _(self, t: TrainingSpec) -> list[str]:
+        return [f"steps={t.num_steps}"]
+
+
