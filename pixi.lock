@@ -498,8 +498,8 @@ packages:
   timestamp: 1765813471974
 - pypi: ./
   name: reconcile
-  version: 0.2.2
-  sha256: 25ec6068fef1dc3fb21c6f997078b374df360ff460bf69da0f517a0417cc330c
+  version: 0.3.0
+  sha256: 1cb9fbcb54cb0584f5263732e55e4a4b3fec5c623dd5b211f9e119c8ce83d655
   requires_dist:
   - pydantic>=2
   requires_python: '>=3.12'
