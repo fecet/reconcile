@@ -17,7 +17,7 @@ from pydantic_core import PydanticUndefined
 try:
     from annotationlib import Format as _AnnotationFormat
 except ImportError:
-    _AnnotationFormat = None
+    _AnnotationFormat = None  # type: ignore[assignment,misc]
 
 
 # Inherit property so Pydantic treats us as a descriptor rather than
@@ -90,7 +90,7 @@ class ReconcileModel:
 
     def promote(self, proxy_cls: type) -> None:
         for field in self.fields.values():
-            self.owner.__dict__.pop(field.field_name)
+            vars(self.owner).pop(field.field_name)
         self.owner.__class__ = proxy_cls
 
     def resolve_fields(self) -> None:
@@ -119,14 +119,14 @@ class ReconcileField:
         return f"{self.model.owner_cls.__name__}.{self.field_name}"
 
     def restore_default(self) -> None:
-        self.model.owner.__dict__[self.field_name] = self.saved_default
+        vars(self.model.owner)[self.field_name] = self.saved_default
 
     def apply_resolution(self, result: Any | None) -> Any:
         if result is None:
             self.restore_default()
         else:
             BaseModel.__setattr__(self.model.owner, self.field_name, result)
-        return self.model.owner.__dict__[self.field_name]
+        return vars(self.model.owner)[self.field_name]
 
 
 class Pool:
@@ -173,7 +173,7 @@ class Pool:
         except Unresolvable:
             return None
 
-    def deps(self, cls: type) -> list[Dependency]:
+    def deps(self, cls: type[BaseModel]) -> list[Dependency]:
         if cls not in self._deps:
             result = [
                 d
@@ -188,7 +188,7 @@ class Pool:
             self._deps[cls] = result
         return self._deps[cls]
 
-    def field_providers(self, cls: type) -> dict[str, Dependency]:
+    def field_providers(self, cls: type[BaseModel]) -> dict[str, Dependency]:
         if cls not in self._field_providers:
             result: dict[str, Dependency] = {}
             for dep in self.deps(cls):
@@ -270,7 +270,7 @@ class ReconcileSession:
             for field_name in set(model.fields) | model.owner.model_fields_set:
                 fi = model.owner_cls.model_fields[field_name]
                 if fi.metadata:
-                    ta = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
+                    ta: TypeAdapter[Any] = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
                     ta.validate_python(getattr(model.owner, field_name))
 
     def demote_models(self) -> None:
@@ -291,7 +291,7 @@ class ReconcileSession:
         model = self.models_by_object_identity[id(obj)]
         field = model.fields.get(name)
         if field is None:
-            return model.owner_cls.__getattr__(obj, name)
+            return model.owner_cls.__getattr__(obj, name)  # type: ignore[attr-defined]
         if field in self.resolving_fields:
             raise self._cycle_error(field)
         self.resolution_stack.append(field)

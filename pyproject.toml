@@ -11,3 +11,11 @@ dependencies = ["pydantic>=2"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/reconcile.py"]
 sources = ["src"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["src", "tests"]
+
+[tool.mypy]
+mypy_path = ["src", "tests"]
+explicit_package_bases = true
