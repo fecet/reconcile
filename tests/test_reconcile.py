@@ -14,7 +14,7 @@ from models.training import (
     WorkflowSpec,
 )
 
-from reconcile import dependency, reconcile
+from reconcile import deferred, dependency, reconcile
 
 
 class ReconcileCase(SimpleNamespace):
@@ -267,7 +267,7 @@ class TestFeatures:
     def test_multiple_deps_on_field_rejected(self):
         with pytest.raises(TypeError, match="Multi.items: multiple providers"):
             class Multi(BaseModel):
-                items: list[str] = Field(default_factory=list)
+                items: list[str] = deferred(default_factory=list)
 
                 @dependency(items)
                 def _a(self, t: TrainingSpec) -> list[str]:

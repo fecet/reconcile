@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
@@ -72,6 +72,10 @@ def dependency(arg: Any = None, /) -> Any:
         return Dependency(fn, target=target)
 
     return decorator
+
+
+def deferred(**kwargs: Any) -> Any:
+    return Field(**kwargs)
 
 
 class Unresolvable(Exception):
