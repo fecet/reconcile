@@ -263,7 +263,7 @@ class ReconcileSession:
                     raise ValueError(
                         f"{model.owner_cls.__name__}.{meta.field_name}: required but unresolved"
                     )
-            for field_name in model.owner.model_fields_set:
+            for field_name in set(model.fields) | model.owner.model_fields_set:
                 fi = model.owner_cls.model_fields[field_name]
                 if fi.metadata:
                     ta = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])

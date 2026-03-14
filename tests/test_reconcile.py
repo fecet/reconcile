@@ -242,6 +242,28 @@ class TestFeatures:
             workflow={"tags": ["manual"]},
         )
 
+    def test_fallback_constraint_violation(self):
+        class Constrained(BaseModel):
+            value: int = Field(default=0, ge=1)
+
+            @dependency(value)
+            def _(self, t: TrainingSpec) -> int:
+                return t.num_steps
+
+        with pytest.raises(ValueError):
+            reconcile(Constrained())
+
+    def test_fallback_valid_default_passes(self):
+        class Constrained(BaseModel):
+            value: int = Field(default=5, ge=1)
+
+            @dependency(value)
+            def _(self, t: TrainingSpec) -> int:
+                return t.num_steps
+
+        (c,) = reconcile(Constrained())
+        assert c.value == 5
+
     def test_multiple_deps_on_field_rejected(self):
         with pytest.raises(TypeError, match="Multi.items: multiple providers"):
             class Multi(BaseModel):
