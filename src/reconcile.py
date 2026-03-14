@@ -117,7 +117,10 @@ class Pool:
 
     def deps(self, cls: type) -> list[Dependency]:
         if cls not in self._deps:
-            result = [d for _, d in inspect.getmembers(cls, lambda a: isinstance(a, Dependency))]
+            result = [
+                d
+                for _, d in inspect.getmembers(cls, lambda a: isinstance(a, Dependency))
+            ]
             seen = {id(d) for d in result}
             for fi in cls.model_fields.values():
                 for m in fi.metadata:
@@ -135,120 +138,76 @@ class Pool:
                     continue
                 existing = result.get(dep.field_name)
                 if existing is not None and existing is not dep:
-                    raise TypeError(f"{cls.__name__}.{dep.field_name}: multiple providers")
+                    raise TypeError(
+                        f"{cls.__name__}.{dep.field_name}: multiple providers"
+                    )
                 result[dep.field_name] = dep
             self._field_providers[cls] = result
         return self._field_providers[cls]
 
 
-def reconcile[*Ts](*participants: *Ts) -> tuple[*Ts]:
-    pool = Pool(participants)
-    models = [obj for obj in participants if isinstance(obj, BaseModel)]
-    original_classes = {id(obj): type(obj) for obj in models}
-    field_providers = {
-        cls: pool.field_providers(cls) for cls in {type(obj) for obj in models}
-    }
-    proxy_classes: dict[type, type] = {}
-    model_by_id = {id(obj): obj for obj in models}
-    saved_defaults: dict[tuple[int, str], Any] = {}
-    resolution_stack: list[tuple[int, str]] = []
-    resolving_fields: set[tuple[int, str]] = set()
+class ReconcileSession:
+    def __init__(self, participants: tuple[Any, ...]) -> None:
+        self.participants = participants
+        self.pool = Pool(participants)
+        self.models = [obj for obj in participants if isinstance(obj, BaseModel)]
+        self.original_classes = {id(obj): type(obj) for obj in self.models}
+        self.field_providers = {
+            cls: self.pool.field_providers(cls)
+            for cls in {type(obj) for obj in self.models}
+        }
+        self.proxy_classes: dict[type, type] = {}
+        self.model_by_id = {id(obj): obj for obj in self.models}
+        self.saved_defaults: dict[tuple[int, str], Any] = {}
+        self.resolution_stack: list[tuple[int, str]] = []
+        self.resolving_fields: set[tuple[int, str]] = set()
 
-    def field_label(key: tuple[int, str]) -> str:
-        obj_id, field_name = key
-        return f"{original_classes[obj_id].__name__}.{field_name}"
-
-    def restore_default(obj: BaseModel, field_name: str) -> None:
-        obj.__dict__[field_name] = saved_defaults[(id(obj), field_name)]
-
-    def resolve_field(fn: Callable[..., Any]) -> Any | None:
+    def run(self) -> tuple[Any, ...]:
         try:
-            return pool.call(fn)
-        except Unresolvable:
-            return None
+            self.promote_models()
+            self.resolve_fields()
+            self.demote_models()
+            self.run_cross_validators()
+            self.validate_fields()
+        finally:
+            self.demote_models()
+            self.restore_defaults()
+        return self.participants
 
-    def apply_resolution(obj: BaseModel, field_name: str, result: Any | None) -> Any:
-        if result is None:
-            restore_default(obj, field_name)
-        else:
-            BaseModel.__setattr__(obj, field_name, result)
-        return obj.__dict__[field_name]
-
-    def cycle_error(key: tuple[int, str]) -> ValueError:
-        start = resolution_stack.index(key)
-        path = resolution_stack[start:] + [key]
-        rendered = " -> ".join(field_label(item) for item in path)
-        return ValueError(f"Cycle detected: {rendered}")
-
-    def proxy_class_for(cls: type) -> type:
-        if cls not in proxy_classes:
-
-            def __getattr__(self: BaseModel, name: str) -> Any:
-                meta = field_providers[cls].get(name)
-                if meta is None:
-                    return cls.__getattr__(self, name)
-                key = (id(self), name)
-                if key in resolving_fields:
-                    raise cycle_error(key)
-                resolution_stack.append(key)
-                resolving_fields.add(key)
-                try:
-                    result = resolve_field(meta.fn.__get__(self, cls))
-                    return apply_resolution(self, name, result)
-                finally:
-                    resolving_fields.remove(key)
-                    resolution_stack.pop()
-
-            proxy_classes[cls] = type(
-                cls.__name__,
-                (cls,),
-                {
-                    "__getattr__": __getattr__,
-                    "__module__": cls.__module__,
-                    "__qualname__": cls.__qualname__,
-                },
-            )
-        return proxy_classes[cls]
-
-    def demote_models() -> None:
-        for obj in models:
-            original_cls = original_classes[id(obj)]
-            if type(obj) is not original_cls:
-                obj.__class__ = original_cls
-
-    try:
-        for obj in models:
-            original_cls = original_classes[id(obj)]
-            for field_name in field_providers[original_cls]:
+    def promote_models(self) -> None:
+        for obj in self.models:
+            original_cls = self.original_classes[id(obj)]
+            for field_name in self.field_providers[original_cls]:
                 if field_name in obj.model_fields_set:
                     continue
-                saved_defaults[(id(obj), field_name)] = obj.__dict__.pop(field_name)
-            obj.__class__ = proxy_class_for(original_cls)
+                self.saved_defaults[(id(obj), field_name)] = obj.__dict__.pop(
+                    field_name
+                )
+            obj.__class__ = self._proxy_class_for(original_cls)
 
-        for obj in models:
-            original_cls = original_classes[id(obj)]
-            for field_name in field_providers[original_cls]:
+    def resolve_fields(self) -> None:
+        for obj in self.models:
+            original_cls = self.original_classes[id(obj)]
+            for field_name in self.field_providers[original_cls]:
                 if field_name in obj.model_fields_set:
                     continue
                 getattr(obj, field_name)
 
-        demote_models()
-
-        # Phase 2: Cross-validate — run dependency validators across objects
-        for obj in models:
+    def run_cross_validators(self) -> None:
+        for obj in self.models:
             cls = type(obj)
-            for meta in pool.deps(cls):
+            for meta in self.pool.deps(cls):
                 if meta.field_name is not None:
                     continue
                 try:
-                    pool.call(meta.fn.__get__(obj, cls))
+                    self.pool.call(meta.fn.__get__(obj, cls))
                 except Unresolvable:
                     continue
 
-        # Phase 3: Field validate — check completeness and Field constraints
-        for obj in models:
+    def validate_fields(self) -> None:
+        for obj in self.models:
             cls = type(obj)
-            for meta in pool.deps(cls):
+            for meta in self.pool.deps(cls):
                 if not meta.required or meta.field_name is None:
                     continue
                 if meta.field_name not in obj.model_fields_set:
@@ -260,11 +219,80 @@ def reconcile[*Ts](*participants: *Ts) -> tuple[*Ts]:
                 if fi.metadata:
                     ta = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
                     ta.validate_python(getattr(obj, field_name))
-    finally:
-        demote_models()
-        for (obj_id, field_name), _ in saved_defaults.items():
-            obj = model_by_id[obj_id]
-            if field_name not in obj.__dict__:
-                restore_default(obj, field_name)
 
-    return participants
+    def demote_models(self) -> None:
+        for obj in self.models:
+            original_cls = self.original_classes[id(obj)]
+            if type(obj) is not original_cls:
+                obj.__class__ = original_cls
+
+    def restore_defaults(self) -> None:
+        for obj_id, field_name in self.saved_defaults.keys():
+            obj = self.model_by_id[obj_id]
+            if field_name not in obj.__dict__:
+                self._restore_default(obj, field_name)
+
+    def _field_label(self, key: tuple[int, str]) -> str:
+        obj_id, field_name = key
+        return f"{self.original_classes[obj_id].__name__}.{field_name}"
+
+    def _restore_default(self, obj: BaseModel, field_name: str) -> None:
+        obj.__dict__[field_name] = self.saved_defaults[(id(obj), field_name)]
+
+    def _resolve_provider(self, fn: Callable[..., Any]) -> Any | None:
+        try:
+            return self.pool.call(fn)
+        except Unresolvable:
+            return None
+
+    def _apply_resolution(
+        self, obj: BaseModel, field_name: str, result: Any | None
+    ) -> Any:
+        if result is None:
+            self._restore_default(obj, field_name)
+        else:
+            BaseModel.__setattr__(obj, field_name, result)
+        return obj.__dict__[field_name]
+
+    def _cycle_error(self, key: tuple[int, str]) -> ValueError:
+        start = self.resolution_stack.index(key)
+        path = self.resolution_stack[start:] + [key]
+        rendered = " -> ".join(self._field_label(item) for item in path)
+        return ValueError(f"Cycle detected: {rendered}")
+
+    def _proxy_getattr(self, cls: type, obj: BaseModel, name: str) -> Any:
+        meta = self.field_providers[cls].get(name)
+        if meta is None:
+            return cls.__getattr__(obj, name)
+        key = (id(obj), name)
+        if key in self.resolving_fields:
+            raise self._cycle_error(key)
+        self.resolution_stack.append(key)
+        self.resolving_fields.add(key)
+        try:
+            result = self._resolve_provider(meta.fn.__get__(obj, cls))
+            return self._apply_resolution(obj, name, result)
+        finally:
+            self.resolving_fields.remove(key)
+            self.resolution_stack.pop()
+
+    def _proxy_class_for(self, cls: type) -> type:
+        if cls not in self.proxy_classes:
+
+            def __getattr__(obj: BaseModel, name: str) -> Any:
+                return self._proxy_getattr(cls, obj, name)
+
+            self.proxy_classes[cls] = type(
+                cls.__name__,
+                (cls,),
+                {
+                    "__getattr__": __getattr__,
+                    "__module__": cls.__module__,
+                    "__qualname__": cls.__qualname__,
+                },
+            )
+        return self.proxy_classes[cls]
+
+
+def reconcile[*Ts](*participants: *Ts) -> tuple[*Ts]:
+    return ReconcileSession(participants).run()
