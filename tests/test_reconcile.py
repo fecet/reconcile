@@ -159,31 +159,28 @@ class TestFeatures:
             expect={0: {"tags": ["manual"]}},
         )
 
-    def test_multiple_deps_on_factory_field(self):
-        class Multi(BaseModel):
-            items: list[str] = Field(default_factory=list)
+    def test_multiple_deps_on_field_rejected(self):
+        with pytest.raises(TypeError, match="Multi.items: multiple providers"):
+            class Multi(BaseModel):
+                items: list[str] = Field(default_factory=list)
 
-            @dependency(items)
-            def _a(self, t: TrainingSpec) -> list[str]:
-                return [f"steps={t.num_steps}"]
+                @dependency(items)
+                def _a(self, t: TrainingSpec) -> list[str]:
+                    return [f"steps={t.num_steps}"]
 
-            @dependency(items)
-            def _b(self, o: AdamWOptimizerSpec) -> list[str]:
-                return [f"lr={o.lr}"]
-
-        spec, _, _ = reconcile(
-            Multi(), TrainingSpec(num_steps=5000), AdamWOptimizerSpec(lr=0.01)
-        )
-        assert spec.items in [["steps=5000"], ["lr=0.01"]]
-
-        assert_reconciled(Multi(), expect={0: {"items": []}})
+                @dependency(items)
+                def _b(self, o: AdamWOptimizerSpec) -> list[str]:
+                    return [f"lr={o.lr}"]
 
 
 class TestCircular:
     def test_mutual_required_both_unset(self):
         from models.circular import MutualA, MutualB
 
-        with pytest.raises(ValueError, match="required but unresolved"):
+        with pytest.raises(
+            ValueError,
+            match=r"Cycle detected: MutualA\.value -> MutualB\.value -> MutualA\.value",
+        ):
             reconcile(MutualA(), MutualB())
 
     def test_mutual_required_one_seeded(self):
@@ -201,18 +198,20 @@ class TestCircular:
     def test_mutual_with_defaults(self):
         from models.circular import NodeX, NodeY
 
-        assert_reconciled(
-            NodeX(), NodeY(),
-            expect={0: {"value": 1}, 1: {"value": 2}},
-        )
+        with pytest.raises(
+            ValueError,
+            match=r"Cycle detected: NodeX\.value -> NodeY\.value -> NodeX\.value",
+        ):
+            reconcile(NodeX(), NodeY())
 
     def test_ring_no_seed(self):
         from models.circular import Ring1, Ring2, Ring3
 
-        assert_reconciled(
-            Ring1(), Ring2(), Ring3(),
-            expect={0: {"value": 1}, 1: {"value": 2}, 2: {"value": 3}},
-        )
+        with pytest.raises(
+            ValueError,
+            match=r"Cycle detected: Ring1\.value -> Ring3\.value -> Ring2\.value -> Ring1\.value",
+        ):
+            reconcile(Ring1(), Ring2(), Ring3())
 
     def test_ring_one_seeded(self):
         from models.circular import Ring1, Ring2, Ring3
@@ -229,3 +228,15 @@ class TestCircular:
             MutualA(value=100), MutualB(value=200),
             expect={0: {"value": 100}, 1: {"value": 200}},
         )
+
+    def test_cycle_error_restores_original_classes(self):
+        from models.circular import MutualA, MutualB
+
+        a = MutualA()
+        b = MutualB()
+        with pytest.raises(ValueError, match="Cycle detected"):
+            reconcile(a, b)
+        assert type(a).__name__ == "MutualA"
+        assert type(b).__name__ == "MutualB"
+        assert a.value is None
+        assert b.value is None
