@@ -84,10 +84,6 @@ class ReconcileModel:
     owner_cls: type[BaseModel]
     fields: dict[str, "ReconcileField"]
 
-    @property
-    def needs_proxy(self) -> bool:
-        return bool(self.fields)
-
     def promote(self, proxy_cls: type) -> None:
         for field in self.fields.values():
             self.owner.__dict__.pop(field.field_name)
@@ -113,10 +109,6 @@ class ReconcileField:
     field_name: str
     provider: Dependency
     saved_default: Any
-
-    @property
-    def owner(self) -> BaseModel:
-        return self.model.owner
 
     @property
     def label(self) -> str:
@@ -171,6 +163,12 @@ class Pool:
             raise Unresolvable
         return fn(**kwargs)
 
+    def try_call(self, fn: Callable[..., Any]) -> Any | None:
+        try:
+            return self.call(fn)
+        except Unresolvable:
+            return None
+
     def deps(self, cls: type) -> list[Dependency]:
         if cls not in self._deps:
             result = [
@@ -192,11 +190,6 @@ class Pool:
             for dep in self.deps(cls):
                 if dep.field_name is None:
                     continue
-                existing = result.get(dep.field_name)
-                if existing is not None and existing is not dep:
-                    raise TypeError(
-                        f"{cls.__name__}.{dep.field_name}: multiple providers"
-                    )
                 result[dep.field_name] = dep
             self._field_providers[cls] = result
         return self._field_providers[cls]
@@ -247,7 +240,7 @@ class ReconcileSession:
 
     def promote_models(self) -> None:
         for model in self.models:
-            if model.needs_proxy:
+            if model.fields:
                 model.promote(self._proxy_class_for(model.owner_cls))
 
     def resolve_fields(self) -> None:
@@ -259,10 +252,7 @@ class ReconcileSession:
             for meta in self.pool.deps(model.owner_cls):
                 if meta.field_name is not None:
                     continue
-                try:
-                    self.pool.call(meta.fn.__get__(model.owner, model.owner_cls))
-                except Unresolvable:
-                    continue
+                self.pool.try_call(meta.fn.__get__(model.owner, model.owner_cls))
 
     def validate_fields(self) -> None:
         for model in self.models:
@@ -287,12 +277,6 @@ class ReconcileSession:
         for model in self.models:
             model.restore_defaults()
 
-    def _resolve_provider(self, fn: Callable[..., Any]) -> Any | None:
-        try:
-            return self.pool.call(fn)
-        except Unresolvable:
-            return None
-
     def _cycle_error(self, field: ReconcileField) -> ValueError:
         start = self.resolution_stack.index(field)
         path = self.resolution_stack[start:] + [field]
@@ -309,7 +293,7 @@ class ReconcileSession:
         self.resolution_stack.append(field)
         self.resolving_fields.add(field)
         try:
-            result = self._resolve_provider(
+            result = self.pool.try_call(
                 field.provider.fn.__get__(obj, model.owner_cls)
             )
             return field.apply_resolution(result)
