@@ -37,173 +37,37 @@ complete model
 
 如果一个字段需要在 complete state 中存在，但它的来源在模型外部，那么它就适合交给 `reconcile`。
 
+这类问题通常适合 `reconcile`：
+
+- 某个字段的值来自另一组配置模型
+- 多个模型需要在“完成态”上做一致性检查
+- 你希望保留 Pydantic 的字段约束和类型系统，但把最终补全放到第二阶段
+
+这类问题通常不适合 `reconcile`：
+
+- 值本来就应该在构造时直接传入
+- 你需要通用服务定位或生命周期管理容器
+- 你希望未完成对象也具备稳定的序列化和业务语义
+
 ## 核心概念
 
-### participant
+这里最重要的三个概念是：
 
-传给 `reconcile(*participants)` 的每个对象都是 participant。
-
-- 它可以是提供值的模型
-- 也可以是消费这些值的模型
-- 一个对象可以同时扮演两种角色
-
-### partial model
-
-partial model 是“已经通过 Pydantic 构造，但还没有完成 reconcile”的对象。
-
-- 它允许某些 derived required fields 暂时缺失
-- 它适合被组装、组合、再传入 `reconcile`
-- 它不是稳定的业务完成态
-
-### complete model
-
-complete model 是 `reconcile()` 完成后的对象。
-
-- 必需字段已经补齐，或明确报错
-- cross-object validator 已经运行
-- 字段约束已经按最终值校验
+- `participant`
+  传给 `reconcile(*participants)` 的对象。它可以提供值，也可以消费值；一个对象也可以同时扮演两种角色。
+- `partial model`
+  已经通过 Pydantic 构造，但还没有完成 reconcile 的对象。它允许某些 derived required fields 暂时缺失，适合先组装再补全。
+- `complete model`
+  `reconcile()` 完成后的对象。此时必需字段已经补齐，cross-object validator 已经运行，字段约束也按最终值校验过。
 
 ## Public API
 
-### `@dependency(field)`
-
-声明一个字段 provider。
-
-- 它为某个字段提供派生值
-- 参数按类型从其他 participant 中解析
-- 如果字段已经被手动赋值，provider 不会覆盖它
-- 方法名本身不参与解析，字段 provider 通常直接命名为 `_`
-- 常见用法见下方「详细示例」
-
-### `@dependency`
-
-声明一个 cross-object validator。
-
-- 它不为字段产出值
-- 它用来检查 participant 之间的语义关系
-- 它在 reconcile 的 validator 阶段运行
-- 常见用法见下方「详细示例」中的 `validate_warmup`
-- 如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过
-
-### `reconcile(*participants)`
-
-把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。
-- 详细调用方式见下方「详细示例」
-
-## 内部流程
-
-当前实现的内部结构是：
-
-```text
-reconcile(*participants)
-        │
-        ▼
-┌──────────────────────────────┐
-│      ReconcileSession        │
-│ - pool                       │
-│ - models: ReconcileModel[]   │
-│ - resolution_stack           │
-│ - resolving_fields           │
-└──────────────┬───────────────┘
-               │
-      ┌────────┴────────┐
-      ▼                 ▼
-┌──────────────┐   ┌──────────────────┐
-│     Pool     │   │  ReconcileModel  │
-│ type -> obj  │   │ - owner          │
-│ resolution   │   │ - owner_cls      │
-└──────────────┘   │ - fields[]       │
-                   └────────┬─────────┘
-                            │
-                            ▼
-                   ┌──────────────────┐
-                   │ ReconcileField   │
-                   │ - field_name     │
-                   │ - provider       │
-                   │ - saved_default  │
-                   └──────────────────┘
-```
-
-一次 `reconcile()` 调用的主流程是：
-
-```text
-reconcile(*participants)
-        │
-        ▼
-ReconcileSession.run()
-        │
-        ├── promote_models()
-        │     └── ReconcileModel.promote()
-        │           ├── pop unresolved dep fields
-        │           └── owner.__class__ = ProxyClass
-        │
-        ├── resolve_fields()
-        │     └── ReconcileModel.resolve_fields()
-        │           └── getattr(owner, field_name)
-        │
-        ├── demote_models()
-        │     └── owner.__class__ = owner_cls
-        │
-        ├── run_cross_validators()
-        │     └── @dependency without target
-        │
-        ├── validate_fields()
-        │     ├── required field check
-        │     └── final TypeAdapter validation
-        │
-        └── finally
-              ├── demote_models()
-              └── restore_defaults()
-```
-
-单个字段在 proxy 阶段的解析路径是：
-
-```text
-ProxyClass.__getattr__(name)
-        │
-        ├── field in model.fields ?
-        │     └── no  -> owner_cls.__getattr__
-        │
-        ├── field in resolving_fields ?
-        │     └── yes -> Cycle detected
-        │
-        ├── push field to resolution_stack
-        │
-        ├── pool.try_call(provider)
-        │     └── provider may recursively read other dep fields
-        │
-        ├── ReconcileField.apply_resolution(result)
-        │     ├── result is None -> restore saved_default
-        │     └── else           -> setattr(owner, field, result)
-        │
-        └── finally
-              ├── remove field from resolving_fields
-              └── pop field from resolution_stack
-```
-
-## 语义保证
-
-这些规则是 `reconcile` 的公开语义，而不是当前实现的偶然现象。
-
-- `Field()` 表示 complete-time required，不等于 constructor-time required
-- 手动赋值优先于 provider 派生
-- `Field(default=...)` 和 `default_factory=...` 可以作为 unresolved fallback
-- 无 target 的 `@dependency` 在缺依赖时默认跳过
-- 类型解析支持按实例类型和继承关系匹配
-- 多个候选同时匹配同一类型时会报歧义错误
-- 一个字段只能有一个 provider
-- 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
-- 字段约束按 complete state 的最终值校验
-
-## 不保证的内容
-
-`reconcile` 明确只保证 complete state 的语义。
-
-- partial model 不承诺可安全序列化
-- partial model 的 `model_dump()` 形状不是公开契约
-- `reconcile` 不是通用 DI 容器
-- 普通多分支 union 不会自动解析
-- 不应依赖 provider 的声明顺序来获得行为
+- `@dependency(field)`
+  声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。字段 provider 的方法名通常直接命名为 `_`。
+- `@dependency`
+  声明一个 cross-object validator。它不为字段产出值，只检查 participant 之间的语义关系；如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过。
+- `reconcile(*participants)`
+  把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。更完整的调用方式见下方「详细示例」。
 
 ## 详细示例
 
@@ -253,14 +117,28 @@ job = JobSpec()
 reconcile(job, training)
 ```
 
-## 适用场景
+内部实现、维护约定和最新流程图见 [AGENTS.md](./AGENTS.md)。
 
-- 某个字段的值来自另一组配置模型
-- 多个模型需要在“完成态”上做一致性检查
-- 你希望保留 Pydantic 的字段约束和类型系统，但把最终补全放到第二阶段
+## 语义保证
 
-## 不适用场景
+这些规则是 `reconcile` 的公开语义，而不是当前实现的偶然现象。
 
-- 值本来就应该在构造时直接传入
-- 你需要通用服务定位或生命周期管理容器
-- 你希望未完成对象也具备稳定的序列化和业务语义
+- `Field()` 表示 complete-time required，不等于 constructor-time required
+- 手动赋值优先于 provider 派生
+- `Field(default=...)` 和 `default_factory=...` 可以作为 unresolved fallback
+- 无 target 的 `@dependency` 在缺依赖时默认跳过
+- 类型解析支持按实例类型和继承关系匹配
+- 多个候选同时匹配同一类型时会报歧义错误
+- 一个字段只能有一个 provider
+- 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
+- 字段约束按 complete state 的最终值校验
+
+## 不保证的内容
+
+`reconcile` 明确只保证 complete state 的语义。
+
+- partial model 不承诺可安全序列化
+- partial model 的 `model_dump()` 形状不是公开契约
+- `reconcile` 不是通用 DI 容器
+- 普通多分支 union 不会自动解析
+- 不应依赖 provider 的声明顺序来获得行为

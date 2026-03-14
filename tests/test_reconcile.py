@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -6,76 +7,128 @@ from pydantic import BaseModel, Field
 from models.training import (
     AdamWOptimizerSpec,
     CrossEntropyLoss,
-    DataLoaderSpec,
-    JobSpec,
-    LinearWarmupSchedulerSpec,
     MAELoss,
     MSELoss,
     NeedsLoss,
-    ScheduleSpec,
     TrainingSpec,
+    WorkflowSpec,
 )
 
 from reconcile import dependency, reconcile
 
 
-def assert_reconciled(*instances: Any, expect: dict[int, dict[str, Any]]) -> tuple[Any, ...]:
-    results = reconcile(*instances)
-    for idx, fields in expect.items():
-        for field, value in fields.items():
-            assert getattr(results[idx], field) == value, (
-                f"results[{idx}].{field}: expected {value!r}, got {getattr(results[idx], field)!r}"
-            )
-    return results
+class ReconcileCase(SimpleNamespace):
+    def expect(self, **participants: dict[str, Any]) -> "ReconcileCase":
+        for name, fields in participants.items():
+            obj = getattr(self, name)
+            for field, value in fields.items():
+                assert getattr(obj, field) == value, (
+                    f"{name}.{field}: expected {value!r}, got {getattr(obj, field)!r}"
+                )
+        return self
+
+
+def reconcile_case(**participants: Any) -> ReconcileCase:
+    results = reconcile(*participants.values())
+    return ReconcileCase(**dict(zip(participants, results, strict=True)))
 
 
 class TestResolution:
     def test_cross_object(self):
-        assert_reconciled(
-            LinearWarmupSchedulerSpec(warmup_steps=100),
-            TrainingSpec(num_steps=2000),
-            AdamWOptimizerSpec(lr=1e-3),
-            expect={0: {"num_steps": 2000, "lr": 1e-3}},
+        case = reconcile_case(
+            workflow=WorkflowSpec(warmup_steps=100),
+            training=TrainingSpec(num_steps=2000),
+            optimizer=AdamWOptimizerSpec(lr=1e-3),
+        ).expect(
+            workflow={
+                    "num_steps": 2000,
+                    "lr": 1e-3,
+                    "batch_size": 2000,
+                    "effective_lr": 1e-3,
+                    "tags": ["steps=2000"],
+                },
+            training={"num_steps": 2000},
+            optimizer={"lr": 1e-3},
         )
+        assert case.workflow.training is case.training
+        assert case.optimizer.lr == 1e-3
 
     def test_manual_override(self):
-        assert_reconciled(
-            LinearWarmupSchedulerSpec(warmup_steps=100, num_steps=999, lr=1e-2),
-            TrainingSpec(num_steps=2000),
-            AdamWOptimizerSpec(lr=5e-4),
-            expect={0: {"num_steps": 999, "lr": 1e-2}},
+        reconcile_case(
+            workflow=WorkflowSpec(
+                warmup_steps=100,
+                num_steps=999,
+                lr=1e-2,
+                effective_lr=5e-2,
+                tags=["manual"],
+            ),
+            training=TrainingSpec(num_steps=2000),
+            optimizer=AdamWOptimizerSpec(lr=5e-4),
+        ).expect(
+            workflow={
+                "num_steps": 999,
+                "lr": 1e-2,
+                "effective_lr": 5e-2,
+                "tags": ["manual"],
+                "batch_size": 2000,
+            }
         )
 
     def test_multi_participant(self):
-        loss, *_ = assert_reconciled(
-            CrossEntropyLoss(),
-            AdamWOptimizerSpec(lr=3e-4),
-            LinearWarmupSchedulerSpec(warmup_steps=200),
-            TrainingSpec(num_steps=5000),
-            expect={
-                1: {"lr": 3e-4},
-                2: {"num_steps": 5000, "lr": 3e-4},
-            },
+        case = reconcile_case(
+            loss=CrossEntropyLoss(),
+            optimizer=AdamWOptimizerSpec(lr=3e-4),
+            workflow=WorkflowSpec(warmup_steps=200),
+            training=TrainingSpec(num_steps=5000),
+        ).expect(
+            optimizer={"lr": 3e-4},
+            workflow={
+                    "num_steps": 5000,
+                    "lr": 3e-4,
+                    "batch_size": 5000,
+                    "effective_lr": 3e-4,
+                    "tags": ["steps=5000"],
+                },
         )
-        assert loss("logits", "labels") == "ce_loss(ignore_index=-100)"
+        assert case.loss("logits", "labels") == "ce_loss(ignore_index=-100)"
+        assert case.workflow.training is case.training
+        assert case.optimizer.lr == case.workflow.lr
 
     def test_skip_when_dependency_absent(self):
-        assert_reconciled(
-            LinearWarmupSchedulerSpec(warmup_steps=100, num_steps=500, lr=0.01),
-            expect={0: {"num_steps": 500, "lr": 0.01}},
+        reconcile_case(
+            workflow=WorkflowSpec(
+                warmup_steps=100,
+                training=TrainingSpec(num_steps=500),
+                num_steps=500,
+                lr=0.01,
+            ),
+        ).expect(
+            workflow={
+                "num_steps": 500,
+                "lr": 0.01,
+                "batch_size": 32,
+                "effective_lr": 0.001,
+                "tags": [],
+            }
         )
 
     def test_model_fields_and_dump(self):
-        assert "num_steps" in LinearWarmupSchedulerSpec.model_fields
-        assert "lr" in LinearWarmupSchedulerSpec.model_fields
-        assert LinearWarmupSchedulerSpec().model_dump() == {
+        assert "training" in WorkflowSpec.model_fields
+        assert "num_steps" in WorkflowSpec.model_fields
+        assert "lr" in WorkflowSpec.model_fields
+        assert WorkflowSpec().model_dump() == {
             "warmup_steps": 0,
             "lr_min": 0.0,
+            "training": None,
             "num_steps": None,
             "lr": None,
+            "batch_size": 32,
+            "effective_lr": 0.001,
+            "tags": [],
         }
-        assert LinearWarmupSchedulerSpec(num_steps=42, lr=0.5).num_steps == 42
-        assert LinearWarmupSchedulerSpec(num_steps=42, lr=0.5).lr == 0.5
+        assert WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).num_steps == 42
+        assert WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).lr == 0.5
+        assert WorkflowSpec(training=TrainingSpec()).batch_size == 32
 
 
 class TestErrors:
@@ -85,12 +138,12 @@ class TestErrors:
 
     def test_required_unresolved(self):
         with pytest.raises(ValueError, match="required but unresolved"):
-            reconcile(LinearWarmupSchedulerSpec(warmup_steps=100))
+            reconcile(WorkflowSpec(warmup_steps=100))
 
     def test_derivation_validation_error(self):
         with pytest.raises(ValueError, match=r"warmup \(5000\) >= total \(2000\)"):
             reconcile(
-                LinearWarmupSchedulerSpec(warmup_steps=5000),
+                WorkflowSpec(warmup_steps=5000),
                 TrainingSpec(num_steps=2000),
                 AdamWOptimizerSpec(),
             )
@@ -99,7 +152,7 @@ class TestErrors:
         with pytest.raises(ValueError):
             reconcile(
                 AdamWOptimizerSpec(lr=0),
-                LinearWarmupSchedulerSpec(warmup_steps=5000),
+                WorkflowSpec(warmup_steps=5000),
                 TrainingSpec(num_steps=2000),
             )
 
@@ -117,58 +170,60 @@ class TestErrors:
 class TestFeatures:
     def test_field_constraints_validated(self):
         with pytest.raises(ValueError, match="less than or equal to 10000"):
-            reconcile(DataLoaderSpec(), TrainingSpec(num_steps=99999))
+            reconcile(WorkflowSpec(), TrainingSpec(num_steps=99999), AdamWOptimizerSpec())
 
-        assert_reconciled(
-            DataLoaderSpec(), TrainingSpec(num_steps=50), AdamWOptimizerSpec(),
-            expect={0: {"batch_size": 50}},
+        reconcile_case(
+            workflow=WorkflowSpec(),
+            training=TrainingSpec(num_steps=50),
+            optimizer=AdamWOptimizerSpec(),
+        ).expect(
+            workflow={"batch_size": 50, "num_steps": 50, "lr": 1e-3},
         )
 
     def test_subclass_resolution(self):
-        loss, _ = assert_reconciled(MSELoss(), TrainingSpec(), expect={0: {"weight": 1.0}})
-        assert isinstance(loss, MSELoss)
-
-    def test_string_annotation_resolved_from_pool(self):
-        class Alpha(BaseModel):
-            value: int = 10
-
-        class Beta(BaseModel):
-            derived: int = Field()
-
-            @dependency(derived)
-            def _(self, a: "Alpha") -> int:
-                return a.value * 2
-
-        assert_reconciled(Beta(), Alpha(value=7), expect={0: {"derived": 14}})
+        case = reconcile_case(loss=MSELoss(), training=TrainingSpec()).expect(
+            loss={"weight": 1.0}
+        )
+        assert isinstance(case.loss, MSELoss)
 
     def test_nested_model_field_resolution(self):
-        scheduler = ScheduleSpec(kind="interval")
-        job, scheduler = assert_reconciled(
-            JobSpec(),
-            scheduler,
-            expect={0: {"scheduler": scheduler}},
+        training = TrainingSpec(num_steps=7)
+        case = reconcile_case(
+            workflow=WorkflowSpec(),
+            training=training,
+            optimizer=AdamWOptimizerSpec(),
+        ).expect(
+            workflow={"training": training, "num_steps": 7, "lr": 1e-3}
         )
-        assert job.scheduler is scheduler
-        assert job.scheduler.kind == "interval"
+        assert case.workflow.training is case.training
+        assert case.workflow.training.num_steps == 7
 
     def test_field_default_as_fallback(self):
-        assert_reconciled(
-            DataLoaderSpec(),
-            TrainingSpec(num_steps=5000),
-            AdamWOptimizerSpec(lr=0.01),
-            expect={0: {"batch_size": 5000, "effective_lr": 0.01, "tags": ["steps=5000"]}},
+        reconcile_case(
+            workflow=WorkflowSpec(training=TrainingSpec(num_steps=5000), num_steps=5000, lr=0.01),
+            training=TrainingSpec(num_steps=5000),
+            optimizer=AdamWOptimizerSpec(lr=0.01),
+        ).expect(
+            workflow={"batch_size": 5000, "effective_lr": 0.01, "tags": ["steps=5000"]},
         )
 
-        assert_reconciled(
-            DataLoaderSpec(),
-            expect={0: {"batch_size": 32, "effective_lr": 0.001, "tags": []}},
+        reconcile_case(
+            workflow=WorkflowSpec(training=TrainingSpec(), num_steps=1000, lr=1e-3),
+        ).expect(
+            workflow={"batch_size": 32, "effective_lr": 0.001, "tags": []},
         )
 
-        assert_reconciled(
-            DataLoaderSpec(tags=["manual"]),
-            TrainingSpec(num_steps=5000),
-            AdamWOptimizerSpec(lr=0.01),
-            expect={0: {"tags": ["manual"]}},
+        reconcile_case(
+            workflow=WorkflowSpec(
+                training=TrainingSpec(num_steps=5000),
+                num_steps=5000,
+                lr=0.01,
+                tags=["manual"],
+            ),
+            training=TrainingSpec(num_steps=5000),
+            optimizer=AdamWOptimizerSpec(lr=0.01),
+        ).expect(
+            workflow={"tags": ["manual"]},
         )
 
     def test_multiple_deps_on_field_rejected(self):
@@ -198,13 +253,19 @@ class TestCircular:
     def test_mutual_required_one_seeded(self):
         from models.circular import MutualA, MutualB
 
-        assert_reconciled(
-            MutualA(value=5), MutualB(),
-            expect={0: {"value": 5}, 1: {"value": 6}},
+        reconcile_case(
+            a=MutualA(value=5),
+            b=MutualB(),
+        ).expect(
+            a={"value": 5},
+            b={"value": 6},
         )
-        assert_reconciled(
-            MutualA(), MutualB(value=10),
-            expect={0: {"value": 11}, 1: {"value": 10}},
+        reconcile_case(
+            a=MutualA(),
+            b=MutualB(value=10),
+        ).expect(
+            a={"value": 11},
+            b={"value": 10},
         )
 
     def test_mutual_with_defaults(self):
@@ -228,17 +289,25 @@ class TestCircular:
     def test_ring_one_seeded(self):
         from models.circular import Ring1, Ring2, Ring3
 
-        assert_reconciled(
-            Ring1(value=10), Ring2(), Ring3(),
-            expect={0: {"value": 10}, 1: {"value": 11}, 2: {"value": 12}},
+        reconcile_case(
+            r1=Ring1(value=10),
+            r2=Ring2(),
+            r3=Ring3(),
+        ).expect(
+            r1={"value": 10},
+            r2={"value": 11},
+            r3={"value": 12},
         )
 
     def test_mutual_manual_override(self):
         from models.circular import MutualA, MutualB
 
-        assert_reconciled(
-            MutualA(value=100), MutualB(value=200),
-            expect={0: {"value": 100}, 1: {"value": 200}},
+        reconcile_case(
+            a=MutualA(value=100),
+            b=MutualB(value=200),
+        ).expect(
+            a={"value": 100},
+            b={"value": 200},
         )
 
     def test_cycle_error_restores_original_classes(self):

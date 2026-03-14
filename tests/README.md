@@ -24,7 +24,7 @@ tests/
 - `TestFeatures` — 单项功能验证
 - `TestCircular` — 循环依赖收敛
 
-**辅助函数 `assert_reconciled`** 封装了 reconcile 调用和字段断言，用 `expect={idx: {field: value}}` 声明预期。
+**辅助函数 `reconcile_case`** 封装了 reconcile 调用并返回具名 participant；后续通过 `.expect(workflow={...}, training={...})` 按名字声明预期。
 
 ## 共享模型
 
@@ -32,9 +32,7 @@ tests/
 |------|---------|
 | `TrainingSpec` | 几乎所有测试的依赖源 |
 | `AdamWOptimizerSpec` | cross_object, validator |
-| `LinearWarmupSchedulerSpec` | cross_object, manual_override, model_fields_and_dump |
+| `WorkflowSpec` | cross_object, manual_override, model_fields_and_dump, nested_model_field_resolution, field_default_as_fallback |
 | `BaseLoss` / `MSELoss` / `MAELoss` | subclass_resolution, subclass_ambiguity |
 | `CrossEntropyLoss(BaseLoss)` | multi_participant |
 | `NeedsLoss` | subclass_ambiguity |
-| `DataLoaderSpec` | field_constraints_validated, field_default_as_fallback |
-| `ScheduleSpec` / `JobSpec` | nested_model_field_resolution |
