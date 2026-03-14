@@ -177,7 +177,11 @@ class TestFeatures:
             training=TrainingSpec(num_steps=50),
             optimizer=AdamWOptimizerSpec(),
         ).expect(
-            workflow={"batch_size": 50, "num_steps": 50, "lr": 1e-3},
+            workflow={
+                "batch_size": 50,
+                "num_steps": 50,
+                "lr": 1e-3,
+            },
         )
 
     def test_subclass_resolution(self):
@@ -193,7 +197,11 @@ class TestFeatures:
             training=training,
             optimizer=AdamWOptimizerSpec(),
         ).expect(
-            workflow={"training": training, "num_steps": 7, "lr": 1e-3}
+            workflow={
+                "training": training,
+                "num_steps": 7,
+                "lr": 1e-3,
+            }
         )
         assert case.workflow.training is case.training
         assert case.workflow.training.num_steps == 7
@@ -204,13 +212,21 @@ class TestFeatures:
             training=TrainingSpec(num_steps=5000),
             optimizer=AdamWOptimizerSpec(lr=0.01),
         ).expect(
-            workflow={"batch_size": 5000, "effective_lr": 0.01, "tags": ["steps=5000"]},
+            workflow={
+                "batch_size": 5000,
+                "effective_lr": 0.01,
+                "tags": ["steps=5000"],
+            },
         )
 
         reconcile_case(
             workflow=WorkflowSpec(training=TrainingSpec(), num_steps=1000, lr=1e-3),
         ).expect(
-            workflow={"batch_size": 32, "effective_lr": 0.001, "tags": []},
+            workflow={
+                "batch_size": 32,
+                "effective_lr": 0.001,
+                "tags": [],
+            },
         )
 
         reconcile_case(
@@ -277,6 +293,18 @@ class TestCircular:
         ):
             reconcile(NodeX(), NodeY())
 
+    def test_cycle_errors_do_not_depend_on_participant_order(self):
+        from models.circular import MutualA, MutualB, NodeX, NodeY
+
+        for participants in [
+            (MutualA(), MutualB()),
+            (MutualB(), MutualA()),
+            (NodeX(), NodeY()),
+            (NodeY(), NodeX()),
+        ]:
+            with pytest.raises(ValueError, match="Cycle detected"):
+                reconcile(*participants)
+
     def test_ring_no_seed(self):
         from models.circular import Ring1, Ring2, Ring3
 
@@ -297,6 +325,22 @@ class TestCircular:
             r1={"value": 10},
             r2={"value": 11},
             r3={"value": 12},
+        )
+
+    def test_seeded_cycles_converge_to_same_values_across_order(self):
+        from models.circular import MutualA, MutualB, Ring1, Ring2, Ring3
+
+        def values_by_type(*participants: Any) -> dict[str, int]:
+            return {type(obj).__name__: obj.value for obj in reconcile(*participants)}
+
+        assert values_by_type(MutualA(value=5), MutualB()) == values_by_type(
+            MutualB(),
+            MutualA(value=5),
+        )
+        assert values_by_type(Ring1(value=10), Ring2(), Ring3()) == values_by_type(
+            Ring2(),
+            Ring3(),
+            Ring1(value=10),
         )
 
     def test_mutual_manual_override(self):
