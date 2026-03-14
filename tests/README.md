@@ -37,3 +37,4 @@ tests/
 | `CrossEntropyLoss(BaseLoss)` | multi_participant |
 | `NeedsLoss` | subclass_ambiguity |
 | `DataLoaderSpec` | field_constraints_validated, field_default_as_fallback |
+| `ScheduleSpec` / `JobSpec` | nested_model_field_resolution |

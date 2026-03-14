@@ -7,10 +7,12 @@ from models.training import (
     AdamWOptimizerSpec,
     CrossEntropyLoss,
     DataLoaderSpec,
+    JobSpec,
     LinearWarmupSchedulerSpec,
     MAELoss,
     MSELoss,
     NeedsLoss,
+    ScheduleSpec,
     TrainingSpec,
 )
 
@@ -138,6 +140,16 @@ class TestFeatures:
                 return a.value * 2
 
         assert_reconciled(Beta(), Alpha(value=7), expect={0: {"derived": 14}})
+
+    def test_nested_model_field_resolution(self):
+        scheduler = ScheduleSpec(kind="interval")
+        job, scheduler = assert_reconciled(
+            JobSpec(),
+            scheduler,
+            expect={0: {"scheduler": scheduler}},
+        )
+        assert job.scheduler is scheduler
+        assert job.scheduler.kind == "interval"
 
     def test_field_default_as_fallback(self):
         assert_reconciled(

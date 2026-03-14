@@ -58,6 +58,18 @@ class LinearWarmupSchedulerSpec(BaseModel):
         return o.lr
 
 
+class ScheduleSpec(BaseModel):
+    kind: str = "cron"
+
+
+class JobSpec(BaseModel):
+    scheduler: ScheduleSpec = Field()
+
+    @dependency(scheduler)
+    def _(self, scheduler: ScheduleSpec) -> ScheduleSpec:
+        return scheduler
+
+
 class NeedsLoss(BaseModel):
     name: str = Field()
 
@@ -82,5 +94,4 @@ class DataLoaderSpec(BaseModel):
     @dependency(tags)
     def _(self, t: TrainingSpec) -> list[str]:
         return [f"steps={t.num_steps}"]
-
 

@@ -72,18 +72,8 @@ complete model 是 `reconcile()` 完成后的对象。
 - 它为某个字段提供派生值
 - 参数按类型从其他 participant 中解析
 - 如果字段已经被手动赋值，provider 不会覆盖它
-- 方法名本身不参与解析，建议使用描述性的英文名称
-
-```python
-class Scheduler(BaseModel):
-    num_steps: int = Field()
-
-    @dependency(num_steps)
-    def derive_num_steps(self, training: TrainingSpec) -> int:
-        return training.num_steps
-```
-
-在这个例子里，`num_steps` 在 complete model 中必需，但允许在构造阶段暂缺。
+- 方法名本身不参与解析，字段 provider 通常直接命名为 `_`
+- 常见用法见下方「详细示例」
 
 ### `@dependency`
 
@@ -92,27 +82,103 @@ class Scheduler(BaseModel):
 - 它不为字段产出值
 - 它用来检查 participant 之间的语义关系
 - 它在 reconcile 的 validator 阶段运行
-
-```python
-class Optimizer(BaseModel):
-    lr: float = 1e-3
-
-    @dependency
-    def _lr_positive(self, training: TrainingSpec) -> None:
-        if self.lr <= 0:
-            raise ValueError("lr must be positive")
-```
+- 常见用法见下方「详细示例」中的 `validate_warmup`
+- 如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过
 
 ### `reconcile(*participants)`
 
 把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。
+- 详细调用方式见下方「详细示例」
 
-```python
-scheduler, training, optimizer = reconcile(
-    Scheduler(),
-    TrainingSpec(num_steps=2000),
-    Optimizer(lr=1e-3),
-)
+## 内部流程
+
+当前实现的内部结构是：
+
+```text
+reconcile(*participants)
+        │
+        ▼
+┌──────────────────────────────┐
+│      ReconcileSession        │
+│ - pool                       │
+│ - models: ReconcileModel[]   │
+│ - resolution_stack           │
+│ - resolving_fields           │
+└──────────────┬───────────────┘
+               │
+      ┌────────┴────────┐
+      ▼                 ▼
+┌──────────────┐   ┌──────────────────┐
+│     Pool     │   │  ReconcileModel  │
+│ type -> obj  │   │ - owner          │
+│ resolution   │   │ - owner_cls      │
+└──────────────┘   │ - fields[]       │
+                   └────────┬─────────┘
+                            │
+                            ▼
+                   ┌──────────────────┐
+                   │ ReconcileField   │
+                   │ - field_name     │
+                   │ - provider       │
+                   │ - saved_default  │
+                   └──────────────────┘
+```
+
+一次 `reconcile()` 调用的主流程是：
+
+```text
+reconcile(*participants)
+        │
+        ▼
+ReconcileSession.run()
+        │
+        ├── promote_models()
+        │     └── ReconcileModel.promote()
+        │           ├── pop unresolved dep fields
+        │           └── owner.__class__ = ProxyClass
+        │
+        ├── resolve_fields()
+        │     └── ReconcileModel.resolve_fields()
+        │           └── getattr(owner, field_name)
+        │
+        ├── demote_models()
+        │     └── owner.__class__ = owner_cls
+        │
+        ├── run_cross_validators()
+        │     └── @dependency without target
+        │
+        ├── validate_fields()
+        │     ├── required field check
+        │     └── final TypeAdapter validation
+        │
+        └── finally
+              ├── demote_models()
+              └── restore_defaults()
+```
+
+单个字段在 proxy 阶段的解析路径是：
+
+```text
+ProxyClass.__getattr__(name)
+        │
+        ├── field in model.fields ?
+        │     └── no  -> owner_cls.__getattr__
+        │
+        ├── field in resolving_fields ?
+        │     └── yes -> Cycle detected
+        │
+        ├── push field to resolution_stack
+        │
+        ├── pool.try_call(provider)
+        │     └── provider may recursively read other dep fields
+        │
+        ├── ReconcileField.apply_resolution(result)
+        │     ├── result is None -> restore saved_default
+        │     └── else           -> setattr(owner, field, result)
+        │
+        └── finally
+              ├── remove field from resolving_fields
+              └── pop field from resolution_stack
 ```
 
 ## 语义保证
@@ -123,10 +189,10 @@ scheduler, training, optimizer = reconcile(
 - 手动赋值优先于 provider 派生
 - `Field(default=...)` 和 `default_factory=...` 可以作为 unresolved fallback
 - 无 target 的 `@dependency` 在缺依赖时默认跳过
-- `Optional[T] = None` 会在缺依赖时显式收到 `None`
 - 类型解析支持按实例类型和继承关系匹配
 - 多个候选同时匹配同一类型时会报歧义错误
 - 一个字段只能有一个 provider
+- 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
 - 字段约束按 complete state 的最终值校验
 
 ## 不保证的内容
@@ -139,9 +205,7 @@ scheduler, training, optimizer = reconcile(
 - 普通多分支 union 不会自动解析
 - 不应依赖 provider 的声明顺序来获得行为
 
-## 最小示例
-
-### 外部实例化字段
+## 详细示例
 
 ```python
 from pydantic import BaseModel, Field
@@ -150,66 +214,43 @@ from reconcile import dependency, reconcile
 
 
 class TrainingSpec(BaseModel):
-    num_steps: int = 1000
+    num_steps: int = 2000
+    lr: float = 3e-4
+    scheduler_kind: str = "cosine"
 
 
-class AdamWOptimizerSpec(BaseModel):
-    lr: float = 1e-3
+class JobSpec(BaseModel):
+    training: TrainingSpec = Field()  # Nested participant: filled with the TrainingSpec object itself.
+    total_steps: int = Field()  # Required derived field: must exist after reconcile().
+    effective_lr: float = Field(default=1e-4)  # Fallback default if the provider cannot run.
+    scheduler_label: str = Field(default="constant")  # Another derived field with fallback default.
+    warmup_steps: int = 100  # Normal local field checked by a cross-object validator.
 
+    @dependency(training)
+    def _(self, training: TrainingSpec) -> TrainingSpec:
+        return training
 
-class LinearWarmupSchedulerSpec(BaseModel):
-    warmup_steps: int = 0
-    num_steps: int = Field()
-    lr: float = Field()
-
-    @dependency(num_steps)
-    def derive_num_steps(self, training: TrainingSpec) -> int:
+    @dependency(total_steps)
+    def _(self, training: TrainingSpec) -> int:
         return training.num_steps
 
-    @dependency(lr)
-    def derive_lr(self, optimizer: AdamWOptimizerSpec) -> float:
-        return optimizer.lr
+    @dependency(effective_lr)
+    def _(self, training: TrainingSpec) -> float:
+        return training.lr
 
-
-scheduler, *_ = reconcile(
-    LinearWarmupSchedulerSpec(warmup_steps=100),
-    TrainingSpec(num_steps=2000),
-    AdamWOptimizerSpec(lr=1e-3),
-)
-
-assert scheduler.num_steps == 2000
-assert scheduler.lr == 1e-3
-```
-
-### 可选依赖与 fallback
-
-```python
-from pydantic import BaseModel, Field
-
-from reconcile import dependency, reconcile
-
-
-class TrainingSpec(BaseModel):
-    num_steps: int = 1000
-
-
-class OptionalDeps(BaseModel):
-    label: str = Field()
+    @dependency(scheduler_label)
+    def _(self, training: TrainingSpec) -> str:
+        return training.scheduler_kind
 
     @dependency
-    def check(self, training: TrainingSpec | None = None) -> None:
-        if training is not None and training.num_steps < 0:
-            raise ValueError("negative steps")
-
-    @dependency(label)
-    def derive_label(self, training: TrainingSpec | None = None) -> str:
-        if training is None:
-            return "default"
-        return f"steps={training.num_steps}"
+    def validate_warmup(self, training: TrainingSpec) -> None:
+        if self.warmup_steps >= training.num_steps:
+            raise ValueError("warmup must be smaller than total steps")
 
 
-(obj,) = reconcile(OptionalDeps())
-assert obj.label == "default"
+training = TrainingSpec()
+job = JobSpec()
+reconcile(job, training)
 ```
 
 ## 适用场景
