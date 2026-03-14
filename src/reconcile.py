@@ -7,6 +7,7 @@
 import inspect
 import typing
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
@@ -75,6 +76,61 @@ def dependency(arg: Any = None, /) -> Any:
 
 class Unresolvable(Exception):
     pass
+
+
+@dataclass(slots=True)
+class ReconcileModel:
+    owner: BaseModel
+    owner_cls: type[BaseModel]
+    fields: dict[str, "ReconcileField"]
+
+    @property
+    def needs_proxy(self) -> bool:
+        return bool(self.fields)
+
+    def promote(self, proxy_cls: type) -> None:
+        for field in self.fields.values():
+            self.owner.__dict__.pop(field.field_name)
+        self.owner.__class__ = proxy_cls
+
+    def resolve_fields(self) -> None:
+        for field in self.fields.values():
+            getattr(self.owner, field.field_name)
+
+    def demote(self) -> None:
+        if type(self.owner) is not self.owner_cls:
+            self.owner.__class__ = self.owner_cls
+
+    def restore_defaults(self) -> None:
+        for field in self.fields.values():
+            if field.field_name not in self.owner.__dict__:
+                field.restore_default()
+
+
+@dataclass(eq=False, slots=True)
+class ReconcileField:
+    model: ReconcileModel
+    field_name: str
+    provider: Dependency
+    saved_default: Any
+
+    @property
+    def owner(self) -> BaseModel:
+        return self.model.owner
+
+    @property
+    def label(self) -> str:
+        return f"{self.model.owner_cls.__name__}.{self.field_name}"
+
+    def restore_default(self) -> None:
+        self.model.owner.__dict__[self.field_name] = self.saved_default
+
+    def apply_resolution(self, result: Any | None) -> Any:
+        if result is None:
+            self.restore_default()
+        else:
+            BaseModel.__setattr__(self.model.owner, self.field_name, result)
+        return self.model.owner.__dict__[self.field_name]
 
 
 class Pool:
@@ -150,17 +206,17 @@ class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
         self.pool = Pool(participants)
-        self.models = [obj for obj in participants if isinstance(obj, BaseModel)]
-        self.original_classes = {id(obj): type(obj) for obj in self.models}
-        self.field_providers = {
-            cls: self.pool.field_providers(cls)
-            for cls in {type(obj) for obj in self.models}
-        }
+        self.models = [
+            self._build_reconcile_model(obj)
+            for obj in participants
+            if isinstance(obj, BaseModel)
+        ]
         self.proxy_classes: dict[type, type] = {}
-        self.model_by_id = {id(obj): obj for obj in self.models}
-        self.saved_defaults: dict[tuple[int, str], Any] = {}
-        self.resolution_stack: list[tuple[int, str]] = []
-        self.resolving_fields: set[tuple[int, str]] = set()
+        self.models_by_object_identity = {
+            id(model.owner): model for model in self.models
+        }
+        self.resolution_stack: list[ReconcileField] = []
+        self.resolving_fields: set[ReconcileField] = set()
 
     def run(self) -> tuple[Any, ...]:
         try:
@@ -174,70 +230,62 @@ class ReconcileSession:
             self.restore_defaults()
         return self.participants
 
+    def _build_reconcile_model(self, obj: BaseModel) -> ReconcileModel:
+        owner_cls = type(obj)
+        model = ReconcileModel(owner=obj, owner_cls=owner_cls, fields={})
+        model.fields = {
+            field_name: ReconcileField(
+                model=model,
+                field_name=field_name,
+                provider=provider,
+                saved_default=obj.__dict__[field_name],
+            )
+            for field_name, provider in self.pool.field_providers(owner_cls).items()
+            if field_name not in obj.model_fields_set
+        }
+        return model
+
     def promote_models(self) -> None:
-        for obj in self.models:
-            original_cls = self.original_classes[id(obj)]
-            for field_name in self.field_providers[original_cls]:
-                if field_name in obj.model_fields_set:
-                    continue
-                self.saved_defaults[(id(obj), field_name)] = obj.__dict__.pop(
-                    field_name
-                )
-            obj.__class__ = self._proxy_class_for(original_cls)
+        for model in self.models:
+            if model.needs_proxy:
+                model.promote(self._proxy_class_for(model.owner_cls))
 
     def resolve_fields(self) -> None:
-        for obj in self.models:
-            original_cls = self.original_classes[id(obj)]
-            for field_name in self.field_providers[original_cls]:
-                if field_name in obj.model_fields_set:
-                    continue
-                getattr(obj, field_name)
+        for model in self.models:
+            model.resolve_fields()
 
     def run_cross_validators(self) -> None:
-        for obj in self.models:
-            cls = type(obj)
-            for meta in self.pool.deps(cls):
+        for model in self.models:
+            for meta in self.pool.deps(model.owner_cls):
                 if meta.field_name is not None:
                     continue
                 try:
-                    self.pool.call(meta.fn.__get__(obj, cls))
+                    self.pool.call(meta.fn.__get__(model.owner, model.owner_cls))
                 except Unresolvable:
                     continue
 
     def validate_fields(self) -> None:
-        for obj in self.models:
-            cls = type(obj)
-            for meta in self.pool.deps(cls):
+        for model in self.models:
+            for meta in self.pool.deps(model.owner_cls):
                 if not meta.required or meta.field_name is None:
                     continue
-                if meta.field_name not in obj.model_fields_set:
+                if meta.field_name not in model.owner.model_fields_set:
                     raise ValueError(
-                        f"{cls.__name__}.{meta.field_name}: required but unresolved"
+                        f"{model.owner_cls.__name__}.{meta.field_name}: required but unresolved"
                     )
-            for field_name in obj.model_fields_set:
-                fi = cls.model_fields[field_name]
+            for field_name in model.owner.model_fields_set:
+                fi = model.owner_cls.model_fields[field_name]
                 if fi.metadata:
                     ta = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
-                    ta.validate_python(getattr(obj, field_name))
+                    ta.validate_python(getattr(model.owner, field_name))
 
     def demote_models(self) -> None:
-        for obj in self.models:
-            original_cls = self.original_classes[id(obj)]
-            if type(obj) is not original_cls:
-                obj.__class__ = original_cls
+        for model in self.models:
+            model.demote()
 
     def restore_defaults(self) -> None:
-        for obj_id, field_name in self.saved_defaults.keys():
-            obj = self.model_by_id[obj_id]
-            if field_name not in obj.__dict__:
-                self._restore_default(obj, field_name)
-
-    def _field_label(self, key: tuple[int, str]) -> str:
-        obj_id, field_name = key
-        return f"{self.original_classes[obj_id].__name__}.{field_name}"
-
-    def _restore_default(self, obj: BaseModel, field_name: str) -> None:
-        obj.__dict__[field_name] = self.saved_defaults[(id(obj), field_name)]
+        for model in self.models:
+            model.restore_defaults()
 
     def _resolve_provider(self, fn: Callable[..., Any]) -> Any | None:
         try:
@@ -245,42 +293,35 @@ class ReconcileSession:
         except Unresolvable:
             return None
 
-    def _apply_resolution(
-        self, obj: BaseModel, field_name: str, result: Any | None
-    ) -> Any:
-        if result is None:
-            self._restore_default(obj, field_name)
-        else:
-            BaseModel.__setattr__(obj, field_name, result)
-        return obj.__dict__[field_name]
-
-    def _cycle_error(self, key: tuple[int, str]) -> ValueError:
-        start = self.resolution_stack.index(key)
-        path = self.resolution_stack[start:] + [key]
-        rendered = " -> ".join(self._field_label(item) for item in path)
+    def _cycle_error(self, field: ReconcileField) -> ValueError:
+        start = self.resolution_stack.index(field)
+        path = self.resolution_stack[start:] + [field]
+        rendered = " -> ".join(item.label for item in path)
         return ValueError(f"Cycle detected: {rendered}")
 
-    def _proxy_getattr(self, cls: type, obj: BaseModel, name: str) -> Any:
-        meta = self.field_providers[cls].get(name)
-        if meta is None:
-            return cls.__getattr__(obj, name)
-        key = (id(obj), name)
-        if key in self.resolving_fields:
-            raise self._cycle_error(key)
-        self.resolution_stack.append(key)
-        self.resolving_fields.add(key)
+    def _proxy_getattr(self, obj: BaseModel, name: str) -> Any:
+        model = self.models_by_object_identity[id(obj)]
+        field = model.fields.get(name)
+        if field is None:
+            return model.owner_cls.__getattr__(obj, name)
+        if field in self.resolving_fields:
+            raise self._cycle_error(field)
+        self.resolution_stack.append(field)
+        self.resolving_fields.add(field)
         try:
-            result = self._resolve_provider(meta.fn.__get__(obj, cls))
-            return self._apply_resolution(obj, name, result)
+            result = self._resolve_provider(
+                field.provider.fn.__get__(obj, model.owner_cls)
+            )
+            return field.apply_resolution(result)
         finally:
-            self.resolving_fields.remove(key)
+            self.resolving_fields.remove(field)
             self.resolution_stack.pop()
 
     def _proxy_class_for(self, cls: type) -> type:
         if cls not in self.proxy_classes:
 
             def __getattr__(obj: BaseModel, name: str) -> Any:
-                return self._proxy_getattr(cls, obj, name)
+                return self._proxy_getattr(obj, name)
 
             self.proxy_classes[cls] = type(
                 cls.__name__,
