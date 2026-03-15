@@ -12,13 +12,7 @@ dependencies = ["pydantic>=2"]
 packages = ["src/reconcile"]
 sources = ["src"]
 
-[tool.pyright]
-pythonVersion = "3.12"
-include = ["src", "tests"]
-exclude = ["src/reconcile/mypy.py"]
-reportCallIssue = "none"
-
 [tool.mypy]
 mypy_path = ["src", "tests"]
 explicit_package_bases = true
-plugins = ["pydantic.mypy", "reconcile.mypy"]
+plugins = ["reconcile.mypy"]

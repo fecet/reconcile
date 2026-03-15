@@ -22,7 +22,6 @@ pydantic = ">=2"
 
 [tasks]
 test = "pytest tests/"
-typecheck = "pyright src/ tests/"
 mypy = "mypy src/ tests/"
 
 [dependencies]
@@ -32,5 +31,4 @@ pytest = "*"
 
 [pypi-dependencies]
 reconcile = { path = ".", editable = true }
-pyright = "*"
 mypy = "*"

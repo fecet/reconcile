@@ -1,24 +1,28 @@
 """Mypy plugin: marks @dependency-targeted fields as init-optional.
 
 PEP 681 @dataclass_transform makes Field() without default a required __init__
-parameter. This plugin injects a synthetic ``default`` keyword into the Field()
-call AST for dep fields, so the transform treats them as optional.
+parameter. This plugin runs AFTER pydantic's hook synthesizes __init__, then
+patches both the FuncDef and its CallableType to make dep fields optional.
 
-Usage in pyproject.toml:
-    plugins = ["pydantic.mypy", "reconcile.mypy"]
+Extends pydantic's mypy plugin — users configure a single entry:
+    plugins = ["reconcile.mypy"]
 """
 
 from typing import Callable
 
 from mypy.nodes import (
     ARG_NAMED,
+    ARG_NAMED_OPT,
     AssignmentStmt,
     CallExpr,
     Decorator,
     EllipsisExpr,
+    FuncDef,
     NameExpr,
+    OverloadedFuncDef,
 )
 from mypy.plugin import ClassDefContext, Plugin
+from pydantic.mypy import PydanticPlugin
 
 
 def _find_dep_field_names(ctx: ClassDefContext) -> set[str]:
@@ -45,36 +49,53 @@ def _find_dep_field_names(ctx: ClassDefContext) -> set[str]:
     return dep_names
 
 
-def _inject_defaults_into_field_calls(ctx: ClassDefContext) -> None:
-    dep_names = _find_dep_field_names(ctx)
-    if not dep_names:
+def _relax_init_args(func: FuncDef, dep_names: set[str]) -> None:
+    for i, arg in enumerate(func.arguments):
+        if arg.variable.name in dep_names and func.arg_kinds[i] == ARG_NAMED:
+            func.arg_kinds[i] = ARG_NAMED_OPT
+            if arg.initializer is None:
+                arg.initializer = EllipsisExpr()
+    # CallableType carries its own arg_kinds used for actual type checking
+    from mypy.types import CallableType
+    if isinstance(func.type, CallableType):
+        for i, name in enumerate(func.type.arg_names):
+            if name in dep_names and func.type.arg_kinds[i] == ARG_NAMED:
+                func.type.arg_kinds[i] = ARG_NAMED_OPT
+
+
+def _patch_init(ctx: ClassDefContext, dep_names: set[str]) -> None:
+    init_sym = ctx.cls.info.names.get("__init__")
+    if not init_sym or not init_sym.node:
         return
-
-    for stmt in ctx.cls.defs.body:
-        if not isinstance(stmt, AssignmentStmt) or stmt.type is None:
-            continue
-        for lvalue in stmt.lvalues:
-            if not isinstance(lvalue, NameExpr) or lvalue.name not in dep_names:
-                continue
-            rhs = stmt.rvalue
-            if not isinstance(rhs, CallExpr):
-                continue
-            has_default = any(
-                n in ("default", "default_factory") for n in rhs.arg_names
-            )
-            if not has_default:
-                rhs.arg_names.append("default")
-                rhs.args.append(EllipsisExpr())
-                rhs.arg_kinds.append(ARG_NAMED)
+    node = init_sym.node
+    if isinstance(node, FuncDef):
+        _relax_init_args(node, dep_names)
+    elif isinstance(node, OverloadedFuncDef):
+        for item in node.items:
+            inner = item.func if isinstance(item, Decorator) else item
+            if isinstance(inner, FuncDef):
+                _relax_init_args(inner, dep_names)
 
 
-class ReconcilePlugin(Plugin):
+class ReconcilePlugin(PydanticPlugin):
     def get_base_class_hook(self, fullname: str) -> Callable[[ClassDefContext], None] | None:
+        pydantic_hook = super().get_base_class_hook(fullname)
+        if pydantic_hook is not None:
+            def combined(ctx: ClassDefContext) -> None:
+                pydantic_hook(ctx)
+                dep_names = _find_dep_field_names(ctx)
+                if dep_names:
+                    _patch_init(ctx, dep_names)
+            return combined
         sym = self.lookup_fully_qualified(fullname)
         if sym and sym.node and hasattr(sym.node, "mro"):
             for base in sym.node.mro:
                 if base.fullname == "pydantic.main.BaseModel":
-                    return _inject_defaults_into_field_calls
+                    def fallback(ctx: ClassDefContext) -> None:
+                        dep_names = _find_dep_field_names(ctx)
+                        if dep_names:
+                            _patch_init(ctx, dep_names)
+                    return fallback
         return None
 
 
