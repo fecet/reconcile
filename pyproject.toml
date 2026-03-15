@@ -19,3 +19,4 @@ include = ["src", "tests"]
 [tool.mypy]
 mypy_path = ["src", "tests"]
 explicit_package_bases = true
+plugins = ["pydantic.mypy"]
