@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 dependencies = ["pydantic>=2"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/reconcile.py"]
+packages = ["src/reconcile"]
 sources = ["src"]
 
 [tool.pyright]
