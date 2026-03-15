@@ -5,7 +5,7 @@ parameter. This plugin injects a synthetic ``default`` keyword into the Field()
 call AST for dep fields, so the transform treats them as optional.
 
 Usage in pyproject.toml:
-    plugins = ["pydantic.mypy", "reconcile._mypy_plugin"]
+    plugins = ["pydantic.mypy", "reconcile.mypy"]
 """
 
 from typing import Callable

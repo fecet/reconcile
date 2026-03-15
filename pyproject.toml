@@ -15,10 +15,10 @@ sources = ["src"]
 [tool.pyright]
 pythonVersion = "3.12"
 include = ["src", "tests"]
-exclude = ["src/reconcile/_mypy_plugin.py"]
+exclude = ["src/reconcile/mypy.py"]
 reportCallIssue = "none"
 
 [tool.mypy]
 mypy_path = ["src", "tests"]
 explicit_package_bases = true
-plugins = ["pydantic.mypy", "reconcile._mypy_plugin"]
+plugins = ["pydantic.mypy", "reconcile.mypy"]
