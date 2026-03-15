@@ -1,10 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from reconcile import deferred, dependency
+from reconcile import dependency
 
 
 class MutualA(BaseModel):
-    value: int = deferred()
+    value: int = Field()
 
     @dependency(value)
     def _(self, b: "MutualB") -> int:
@@ -12,7 +12,7 @@ class MutualA(BaseModel):
 
 
 class MutualB(BaseModel):
-    value: int = deferred()
+    value: int = Field()
 
     @dependency(value)
     def _(self, a: MutualA) -> int:
@@ -20,7 +20,7 @@ class MutualB(BaseModel):
 
 
 class NodeX(BaseModel):
-    value: int = deferred(default=0)
+    value: int = Field(default=0)
 
     @dependency(value)
     def _(self, y: "NodeY") -> int:
@@ -28,7 +28,7 @@ class NodeX(BaseModel):
 
 
 class NodeY(BaseModel):
-    value: int = deferred(default=0)
+    value: int = Field(default=0)
 
     @dependency(value)
     def _(self, x: NodeX) -> int:
@@ -36,7 +36,7 @@ class NodeY(BaseModel):
 
 
 class Ring1(BaseModel):
-    value: int = deferred(default=0)
+    value: int = Field(default=0)
 
     @dependency(value)
     def _(self, r3: "Ring3") -> int:
@@ -44,7 +44,7 @@ class Ring1(BaseModel):
 
 
 class Ring2(BaseModel):
-    value: int = deferred(default=0)
+    value: int = Field(default=0)
 
     @dependency(value)
     def _(self, r1: Ring1) -> int:
@@ -52,7 +52,7 @@ class Ring2(BaseModel):
 
 
 class Ring3(BaseModel):
-    value: int = deferred(default=0)
+    value: int = Field(default=0)
 
     @dependency(value)
     def _(self, r2: Ring2) -> int:

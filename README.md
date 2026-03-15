@@ -62,8 +62,6 @@ complete model
 
 ## Public API
 
-- `deferred(**kwargs)`
-  标记 dep 字段的类型安全替代品，等价于 `Field(**kwargs)`，但返回类型为 `Any`，避免类型检查器要求构造时传参。
 - `@dependency(field)`
   声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。字段 provider 的方法名通常直接命名为 `_`。
 - `@dependency`
@@ -76,9 +74,9 @@ complete model
 ## 详细示例
 
 ```python
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from reconcile import deferred, dependency, reconcile
+from reconcile import dependency, reconcile
 
 
 class TrainingSpec(BaseModel):
@@ -88,10 +86,10 @@ class TrainingSpec(BaseModel):
 
 
 class JobSpec(BaseModel):
-    training: TrainingSpec = deferred()  # Nested participant: filled with the TrainingSpec object itself.
-    total_steps: int = deferred()  # Required derived field: must exist after reconcile().
-    effective_lr: float = deferred(default=1e-4)  # Fallback default if the provider cannot run.
-    scheduler_label: str = deferred(default="constant")  # Another derived field with fallback default.
+    training: TrainingSpec = Field()  # Nested participant: filled with the TrainingSpec object itself.
+    total_steps: int = Field()  # Required derived field: must exist after reconcile().
+    effective_lr: float = Field(default=1e-4)  # Fallback default if the provider cannot run.
+    scheduler_label: str = Field(default="constant")  # Another derived field with fallback default.
     warmup_steps: int = 100  # Normal local field checked by a cross-object validator.
 
     @dependency(training)

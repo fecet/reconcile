@@ -14,7 +14,7 @@ from models.training import (
     WorkflowSpec,
 )
 
-from reconcile import deferred, dependency, reconcile
+from reconcile import dependency, reconcile
 
 
 class ReconcileCase(SimpleNamespace):
@@ -244,7 +244,7 @@ class TestFeatures:
 
     def test_nullable_provider_returns_none(self):
         class NullableSpec(BaseModel):
-            value: int | None = deferred(default=1)
+            value: int | None = Field(default=1)
 
             @dependency(value)
             def _(self, t: TrainingSpec) -> int | None:
@@ -255,7 +255,7 @@ class TestFeatures:
 
     def test_nullable_unresolvable_falls_back(self):
         class NullableSpec(BaseModel):
-            value: int | None = deferred(default=1)
+            value: int | None = Field(default=1)
 
             @dependency(value)
             def _(self, t: TrainingSpec) -> int | None:
@@ -289,7 +289,7 @@ class TestFeatures:
     def test_multiple_deps_on_field_rejected(self):
         with pytest.raises(TypeError, match="Multi.items: multiple providers"):
             class Multi(BaseModel):
-                items: list[str] = deferred(default_factory=list)
+                items: list[str] = Field(default_factory=list)
 
                 @dependency(items)
                 def _a(self, t: TrainingSpec) -> list[str]:

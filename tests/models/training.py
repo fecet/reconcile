@@ -1,8 +1,8 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from reconcile import deferred, dependency
+from reconcile import dependency
 
 
 class TrainingSpec(BaseModel):
@@ -44,12 +44,12 @@ class AdamWOptimizerSpec(BaseModel):
 class WorkflowSpec(BaseModel):
     warmup_steps: int = 0
     lr_min: float = 0.0
-    training: TrainingSpec = deferred()
-    num_steps: int = deferred()
-    lr: float = deferred()
-    batch_size: int = deferred(default=32, ge=1, le=10000)
-    effective_lr: float = deferred(default=0.001)
-    tags: list[str] = deferred(default_factory=list)
+    training: TrainingSpec = Field()
+    num_steps: int = Field()
+    lr: float = Field()
+    batch_size: int = Field(default=32, ge=1, le=10000)
+    effective_lr: float = Field(default=0.001)
+    tags: list[str] = Field(default_factory=list)
 
     @dependency(training)
     def _(self, training: "TrainingSpec") -> TrainingSpec:
@@ -79,7 +79,7 @@ class WorkflowSpec(BaseModel):
 
 
 class NeedsLoss(BaseModel):
-    name: str = deferred()
+    name: str = Field()
 
     @dependency(name)
     def _(self, loss: BaseLoss) -> str:
