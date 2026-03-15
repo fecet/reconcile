@@ -68,6 +68,8 @@ complete model
   声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。字段 provider 的方法名通常直接命名为 `_`。
 - `@dependency`
   声明一个 cross-object validator。它不为字段产出值，只检查 participant 之间的语义关系；如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过。
+- `Unresolvable`
+  provider 内部抛出此异常表示"虽然依赖存在，但当前无法提供值"，效果等同于依赖缺失时的 fallback。
 - `reconcile(*participants)`
   把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。更完整的调用方式见下方「详细示例」。
 

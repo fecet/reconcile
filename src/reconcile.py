@@ -82,6 +82,9 @@ class Unresolvable(Exception):
     pass
 
 
+_UNRESOLVED = object()
+
+
 @dataclass(slots=True)
 class ReconcileModel:
     owner: BaseModel
@@ -121,8 +124,8 @@ class ReconcileField:
     def restore_default(self) -> None:
         vars(self.model.owner)[self.field_name] = self.saved_default
 
-    def apply_resolution(self, result: Any | None) -> Any:
-        if result is None:
+    def apply_resolution(self, result: Any) -> Any:
+        if result is _UNRESOLVED:
             self.restore_default()
         else:
             BaseModel.__setattr__(self.model.owner, self.field_name, result)
@@ -167,11 +170,11 @@ class Pool:
             raise Unresolvable
         return fn(**kwargs)
 
-    def try_call(self, fn: Callable[..., Any]) -> Any | None:
+    def try_call(self, fn: Callable[..., Any]) -> Any:
         try:
             return self.call(fn)
         except Unresolvable:
-            return None
+            return _UNRESOLVED
 
     def deps(self, cls: type[BaseModel]) -> list[Dependency]:
         if cls not in self._deps:

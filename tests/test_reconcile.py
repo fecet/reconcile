@@ -242,6 +242,28 @@ class TestFeatures:
             workflow={"tags": ["manual"]},
         )
 
+    def test_nullable_provider_returns_none(self):
+        class NullableSpec(BaseModel):
+            value: int | None = deferred(default=1)
+
+            @dependency(value)
+            def _(self, t: TrainingSpec) -> int | None:
+                return None
+
+        (spec, _) = reconcile(NullableSpec(), TrainingSpec())
+        assert spec.value is None
+
+    def test_nullable_unresolvable_falls_back(self):
+        class NullableSpec(BaseModel):
+            value: int | None = deferred(default=1)
+
+            @dependency(value)
+            def _(self, t: TrainingSpec) -> int | None:
+                return None
+
+        (spec,) = reconcile(NullableSpec())
+        assert spec.value == 1
+
     def test_fallback_constraint_violation(self):
         class Constrained(BaseModel):
             value: int = Field(default=0, ge=1)
