@@ -499,7 +499,7 @@ packages:
 - pypi: ./
   name: reconcile
   version: 0.2.2
-  sha256: 25ec6068fef1dc3fb21c6f997078b374df360ff460bf69da0f517a0417cc330c
+  sha256: 48ba94931d10894478de19c80f2686dee2333c1e92aa01081deb5a612090f0f3
   requires_dist:
   - pydantic>=2
   requires_python: '>=3.12'
