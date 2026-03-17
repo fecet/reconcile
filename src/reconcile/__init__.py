@@ -51,13 +51,13 @@ class Dependency(property):
                 continue
             if len(deps) > 1:
                 raise TypeError(f"{owner.__name__}.{fname}: multiple providers")
+            [dep] = deps
             has_factory = fi.default_factory is not None
-            for dep in deps:
-                dep.field_name = fname
-                dep.required = fi.default is PydanticUndefined and not has_factory
-            if not has_factory and deps[0].required:
+            dep.field_name = fname
+            dep.required = fi.default is PydanticUndefined and not has_factory
+            if not has_factory and dep.required:
                 fi.default = None
-            ann[fname] = typing.Annotated[hint, fi, *deps]
+            ann[fname] = typing.Annotated[hint, fi, dep]
             if has_factory:
                 delattr(owner, fname)
             else:
@@ -84,44 +84,12 @@ UNRESOLVED = Sentinel("UNRESOLVED")
 RESOLVING = Sentinel("RESOLVING")
 
 
-@dataclass(slots=True)
-class ReconcileModel:
-    owner: BaseModel
-    owner_cls: type[BaseModel]
-    fields: dict[str, "ReconcileField"]
-
-    def promote(self, proxy_cls: type) -> None:
-        for field in self.fields.values():
-            vars(self.owner).pop(field.field_name)
-        self.owner.__class__ = proxy_cls
-
-    def resolve_fields(self) -> None:
-        for field in self.fields.values():
-            getattr(self.owner, field.field_name)
-
-    def demote(self) -> None:
-        if type(self.owner) is not self.owner_cls:
-            self.owner.__class__ = self.owner_cls
-
-    def restore_defaults(self) -> None:
-        for field in self.fields.values():
-            if field.field_name not in self.owner.__dict__:
-                field.restore_default()
-
-
 @dataclass(eq=False, slots=True)
-class ReconcileField:
-    model: ReconcileModel
+class FieldSlot:
+    owner: BaseModel
     field_name: str
     provider: Dependency
     saved_default: Any
-
-    @property
-    def label(self) -> str:
-        return f"{self.model.owner_cls.__name__}.{self.field_name}"
-
-    def restore_default(self) -> None:
-        vars(self.model.owner)[self.field_name] = self.saved_default
 
 
 class Pool:
@@ -130,7 +98,6 @@ class Pool:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self._data: dict[type, list[Any]] = {}
         self._deps: dict[type, list[Dependency]] = {}
-        self._field_providers: dict[type, dict[str, Dependency]] = {}
         for obj in participants:
             for cls in type(obj).__mro__:
                 if cls in self._EXCLUDED:
@@ -183,31 +150,21 @@ class Pool:
             self._deps[cls] = result
         return self._deps[cls]
 
-    def field_providers(self, cls: type[BaseModel]) -> dict[str, Dependency]:
-        if cls not in self._field_providers:
-            result: dict[str, Dependency] = {}
-            for dep in self.deps(cls):
-                if dep.field_name is None:
-                    continue
-                result[dep.field_name] = dep
-            self._field_providers[cls] = result
-        return self._field_providers[cls]
-
-
 class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
         self.pool = Pool(participants)
-        self.models = [
-            self._build_reconcile_model(obj)
-            for obj in participants
-            if isinstance(obj, BaseModel)
-        ]
+        self.owners: dict[int, BaseModel] = {}
+        self.owner_cls: dict[int, type[BaseModel]] = {}
+        self.slots: dict[int, dict[str, FieldSlot]] = {}
+        for obj in participants:
+            if isinstance(obj, BaseModel):
+                cls = type(obj)
+                self.owners[id(obj)] = obj
+                self.owner_cls[id(obj)] = cls
+                self.slots[id(obj)] = self._build_slots(obj, cls)
         self.proxy_classes: dict[type, type] = {}
-        self.models_by_object_identity = {
-            id(model.owner): model for model in self.models
-        }
-        self.resolved: dict[ReconcileField, Any] = {}
+        self.resolved: dict[FieldSlot, Any] = {}
 
     def run(self) -> tuple[Any, ...]:
         try:
@@ -222,89 +179,100 @@ class ReconcileSession:
             self.restore_defaults()
         return self.participants
 
-    def _build_reconcile_model(self, obj: BaseModel) -> ReconcileModel:
-        owner_cls = type(obj)
-        model = ReconcileModel(owner=obj, owner_cls=owner_cls, fields={})
-        model.fields = {
-            field_name: ReconcileField(
-                model=model,
-                field_name=field_name,
-                provider=provider,
-                saved_default=obj.__dict__[field_name],
+    def _build_slots(self, obj: BaseModel, cls: type[BaseModel]) -> dict[str, FieldSlot]:
+        return {
+            dep.field_name: FieldSlot(
+                owner=obj,
+                field_name=dep.field_name,
+                provider=dep,
+                saved_default=obj.__dict__[dep.field_name],
             )
-            for field_name, provider in self.pool.field_providers(owner_cls).items()
-            if field_name not in obj.model_fields_set
+            for dep in self.pool.deps(cls)
+            if dep.field_name is not None and dep.field_name not in obj.model_fields_set
         }
-        return model
 
     def promote_models(self) -> None:
-        for model in self.models:
-            if model.fields:
-                model.promote(self._proxy_class_for(model.owner_cls))
+        for obj_id, fields in self.slots.items():
+            if not fields:
+                continue
+            obj = self.owners[obj_id]
+            for slot in fields.values():
+                vars(obj).pop(slot.field_name)
+            obj.__class__ = self._proxy_class_for(self.owner_cls[obj_id])
 
     def resolve_fields(self) -> None:
-        for model in self.models:
-            model.resolve_fields()
+        for fields in self.slots.values():
+            for slot in fields.values():
+                getattr(slot.owner, slot.field_name)
 
     def commit_results(self) -> None:
-        for field, result in self.resolved.items():
+        for slot, result in self.resolved.items():
             if result is not UNRESOLVED:
-                BaseModel.__setattr__(field.model.owner, field.field_name, result)
+                BaseModel.__setattr__(slot.owner, slot.field_name, result)
             else:
-                field.restore_default()
+                vars(slot.owner)[slot.field_name] = slot.saved_default
 
     def run_cross_validators(self) -> None:
-        for model in self.models:
-            for meta in self.pool.deps(model.owner_cls):
-                if meta.field_name is not None:
+        for obj_id, cls in self.owner_cls.items():
+            obj = self.owners[obj_id]
+            for dep in self.pool.deps(cls):
+                if dep.field_name is not None:
                     continue
-                self.pool.try_call(meta.fn.__get__(model.owner, model.owner_cls))
+                self.pool.try_call(dep.fn.__get__(obj, cls))
 
     def validate_fields(self) -> None:
-        for model in self.models:
-            for meta in self.pool.deps(model.owner_cls):
-                if not meta.required or meta.field_name is None:
+        for obj_id, cls in self.owner_cls.items():
+            obj = self.owners[obj_id]
+            fields = self.slots[obj_id]
+            for dep in self.pool.deps(cls):
+                if not dep.required or dep.field_name is None:
                     continue
-                if meta.field_name not in model.owner.model_fields_set:
+                if dep.field_name not in obj.model_fields_set:
                     raise ValueError(
-                        f"{model.owner_cls.__name__}.{meta.field_name}: required but unresolved"
+                        f"{cls.__name__}.{dep.field_name}: required but unresolved"
                     )
-            for field_name in set(model.fields) | model.owner.model_fields_set:
-                fi = model.owner_cls.model_fields[field_name]
+            for field_name in set(fields) | obj.model_fields_set:
+                fi = cls.model_fields[field_name]
                 if fi.metadata:
                     ta: TypeAdapter[Any] = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
-                    ta.validate_python(getattr(model.owner, field_name))
+                    ta.validate_python(getattr(obj, field_name))
 
     def demote_models(self) -> None:
-        for model in self.models:
-            model.demote()
+        for obj_id, cls in self.owner_cls.items():
+            obj = self.owners[obj_id]
+            if type(obj) is not cls:
+                obj.__class__ = cls
 
     def restore_defaults(self) -> None:
-        for model in self.models:
-            model.restore_defaults()
+        for fields in self.slots.values():
+            for slot in fields.values():
+                if slot.field_name not in slot.owner.__dict__:
+                    vars(slot.owner)[slot.field_name] = slot.saved_default
 
-    def _cycle_error(self, field: ReconcileField) -> ValueError:
-        stack = [f for f, r in self.resolved.items() if r is RESOLVING]
-        path = stack[stack.index(field):] + [field]
-        rendered = " -> ".join(item.label for item in path)
+    def _cycle_error(self, slot: FieldSlot) -> ValueError:
+        stack = [s for s, r in self.resolved.items() if r is RESOLVING]
+        path = stack[stack.index(slot):] + [slot]
+        rendered = " -> ".join(
+            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}"
+            for s in path
+        )
         return ValueError(f"Cycle detected: {rendered}")
 
     def _proxy_getattr(self, obj: BaseModel, name: str) -> Any:
-        model = self.models_by_object_identity[id(obj)]
-        field = model.fields.get(name)
-        if field is None:
-            return model.owner_cls.__getattr__(obj, name)  # type: ignore[attr-defined]
-        if field in self.resolved:
-            result = self.resolved[field]
-            if result is RESOLVING:
-                raise self._cycle_error(field)
-            return field.saved_default if result is UNRESOLVED else result
-        self.resolved[field] = RESOLVING
-        self.resolved[field] = self.pool.try_call(
-            field.provider.fn.__get__(obj, model.owner_cls)
-        )
-        result = self.resolved[field]
-        return field.saved_default if result is UNRESOLVED else result
+        oid = id(obj)
+        cls = self.owner_cls[oid]
+        slot = self.slots[oid].get(name)
+        if slot is None:
+            return cls.__getattr__(obj, name)  # type: ignore[attr-defined]
+        if slot not in self.resolved:
+            self.resolved[slot] = RESOLVING
+            self.resolved[slot] = self.pool.try_call(
+                slot.provider.fn.__get__(obj, cls)
+            )
+        result = self.resolved[slot]
+        if result is RESOLVING:
+            raise self._cycle_error(slot)
+        return slot.saved_default if result is UNRESOLVED else result
 
     def _proxy_class_for(self, cls: type) -> type:
         if cls not in self.proxy_classes:
