@@ -14,6 +14,8 @@ from pydantic import BaseModel, TypeAdapter
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from reconcile.sentinel import Sentinel
+
 try:
     from annotationlib import Format as _AnnotationFormat
 except ImportError:
@@ -78,7 +80,8 @@ class Unresolvable(Exception):
     pass
 
 
-_UNRESOLVED = object()
+UNRESOLVED = Sentinel("UNRESOLVED")
+RESOLVING = Sentinel("RESOLVING")
 
 
 @dataclass(slots=True)
@@ -119,13 +122,6 @@ class ReconcileField:
 
     def restore_default(self) -> None:
         vars(self.model.owner)[self.field_name] = self.saved_default
-
-    def apply_resolution(self, result: Any) -> Any:
-        if result is _UNRESOLVED:
-            self.restore_default()
-        else:
-            BaseModel.__setattr__(self.model.owner, self.field_name, result)
-        return vars(self.model.owner)[self.field_name]
 
 
 class Pool:
@@ -170,7 +166,7 @@ class Pool:
         try:
             return self.call(fn)
         except Unresolvable:
-            return _UNRESOLVED
+            return UNRESOLVED
 
     def deps(self, cls: type[BaseModel]) -> list[Dependency]:
         if cls not in self._deps:
@@ -211,13 +207,13 @@ class ReconcileSession:
         self.models_by_object_identity = {
             id(model.owner): model for model in self.models
         }
-        self.resolution_stack: list[ReconcileField] = []
-        self.resolving_fields: set[ReconcileField] = set()
+        self.resolved: dict[ReconcileField, Any] = {}
 
     def run(self) -> tuple[Any, ...]:
         try:
             self.promote_models()
             self.resolve_fields()
+            self.commit_results()
             self.demote_models()
             self.run_cross_validators()
             self.validate_fields()
@@ -250,6 +246,13 @@ class ReconcileSession:
         for model in self.models:
             model.resolve_fields()
 
+    def commit_results(self) -> None:
+        for field, result in self.resolved.items():
+            if result is not UNRESOLVED:
+                BaseModel.__setattr__(field.model.owner, field.field_name, result)
+            else:
+                field.restore_default()
+
     def run_cross_validators(self) -> None:
         for model in self.models:
             for meta in self.pool.deps(model.owner_cls):
@@ -281,8 +284,8 @@ class ReconcileSession:
             model.restore_defaults()
 
     def _cycle_error(self, field: ReconcileField) -> ValueError:
-        start = self.resolution_stack.index(field)
-        path = self.resolution_stack[start:] + [field]
+        stack = [f for f, r in self.resolved.items() if r is RESOLVING]
+        path = stack[stack.index(field):] + [field]
         rendered = " -> ".join(item.label for item in path)
         return ValueError(f"Cycle detected: {rendered}")
 
@@ -291,18 +294,17 @@ class ReconcileSession:
         field = model.fields.get(name)
         if field is None:
             return model.owner_cls.__getattr__(obj, name)  # type: ignore[attr-defined]
-        if field in self.resolving_fields:
-            raise self._cycle_error(field)
-        self.resolution_stack.append(field)
-        self.resolving_fields.add(field)
-        try:
-            result = self.pool.try_call(
-                field.provider.fn.__get__(obj, model.owner_cls)
-            )
-            return field.apply_resolution(result)
-        finally:
-            self.resolving_fields.remove(field)
-            self.resolution_stack.pop()
+        if field in self.resolved:
+            result = self.resolved[field]
+            if result is RESOLVING:
+                raise self._cycle_error(field)
+            return field.saved_default if result is UNRESOLVED else result
+        self.resolved[field] = RESOLVING
+        self.resolved[field] = self.pool.try_call(
+            field.provider.fn.__get__(obj, model.owner_cls)
+        )
+        result = self.resolved[field]
+        return field.saved_default if result is UNRESOLVED else result
 
     def _proxy_class_for(self, cls: type) -> type:
         if cls not in self.proxy_classes:
