@@ -53,6 +53,9 @@ class Dependency(property):
             dep.required = fi.default is PydanticUndefined and not has_factory
             if not has_factory and dep.required:
                 fi.default = None
+                # Pydantic rebuilds FieldInfo from _attributes_set during
+                # model creation; plain attribute mutation is ignored.
+                fi._attributes_set.update({"default": None, "validate_default": False})
             ann[fname] = typing.Annotated[hint, fi, dep]
             if has_factory:
                 delattr(owner, fname)
@@ -146,6 +149,7 @@ class Pool:
             self._deps[cls] = result
         return self._deps[cls]
 
+
 class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
@@ -176,7 +180,9 @@ class ReconcileSession:
             raise
         return self.participants
 
-    def _build_slots(self, obj: BaseModel, cls: type[BaseModel]) -> dict[str, FieldSlot]:
+    def _build_slots(
+        self, obj: BaseModel, cls: type[BaseModel]
+    ) -> dict[str, FieldSlot]:
         return {
             dep.field_name: FieldSlot(
                 owner=obj,
@@ -231,7 +237,9 @@ class ReconcileSession:
             for field_name in set(fields) | obj.model_fields_set:
                 fi = cls.model_fields[field_name]
                 if fi.metadata:
-                    ta: TypeAdapter[Any] = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
+                    ta: TypeAdapter[Any] = TypeAdapter(
+                        typing.Annotated[fi.annotation, *fi.metadata]
+                    )
                     ta.validate_python(getattr(obj, field_name))
 
     def demote_models(self) -> None:
@@ -248,10 +256,9 @@ class ReconcileSession:
 
     def _cycle_error(self, slot: FieldSlot) -> ValueError:
         stack = [s for s, r in self.resolved.items() if r is RESOLVING]
-        path = stack[stack.index(slot):] + [slot]
+        path = stack[stack.index(slot) :] + [slot]
         rendered = " -> ".join(
-            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}"
-            for s in path
+            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}" for s in path
         )
         return ValueError(f"Cycle detected: {rendered}")
 
@@ -263,9 +270,7 @@ class ReconcileSession:
             return cls.__getattr__(obj, name)  # type: ignore[attr-defined]
         if slot not in self.resolved:
             self.resolved[slot] = RESOLVING
-            self.resolved[slot] = self.pool.try_call(
-                slot.provider.fn.__get__(obj, cls)
-            )
+            self.resolved[slot] = self.pool.try_call(slot.provider.fn.__get__(obj, cls))
         result = self.resolved[slot]
         if result is RESOLVING:
             raise self._cycle_error(slot)

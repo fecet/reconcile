@@ -5,12 +5,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from reconcile import dependency
 
 
-class TrainingSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class _StrictConfig:
+    model_config = ConfigDict(
+        extra="forbid", validate_default=True, validate_assignment=True
+    )
+
+
+class TrainingSpec(_StrictConfig, BaseModel):
     num_steps: int = 1000
 
 
-class BaseLoss(BaseModel):
+class BaseLoss(_StrictConfig, BaseModel):
     weight: float = 1.0
 
 
@@ -30,7 +35,7 @@ class CrossEntropyLoss(BaseLoss):
         return f"ce_loss(ignore_index={self.ignore_index})"
 
 
-class AdamWOptimizerSpec(BaseModel):
+class AdamWOptimizerSpec(_StrictConfig, BaseModel):
     lr: float = 1e-3
     betas: tuple[float, float] = (0.9, 0.999)
     weight_decay: float = 0.01
@@ -41,7 +46,7 @@ class AdamWOptimizerSpec(BaseModel):
             raise ValueError(f"lr={self.lr} must be positive")
 
 
-class WorkflowSpec(BaseModel):
+class WorkflowSpec(_StrictConfig, BaseModel):
     warmup_steps: int = 0
     lr_min: float = 0.0
     training: TrainingSpec = Field()
@@ -78,7 +83,7 @@ class WorkflowSpec(BaseModel):
         return [f"steps={t.num_steps}"]
 
 
-class NeedsLoss(BaseModel):
+class NeedsLoss(_StrictConfig, BaseModel):
     name: str = Field()
 
     @dependency(name)

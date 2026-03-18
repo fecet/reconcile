@@ -1,9 +1,10 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from reconcile import dependency
 
 
 class MutualA(BaseModel):
+    model_config = ConfigDict(validate_default=True, validate_assignment=True)
     value: int = Field()
 
     @dependency(value)
@@ -12,6 +13,7 @@ class MutualA(BaseModel):
 
 
 class MutualB(BaseModel):
+    model_config = ConfigDict(validate_default=True, validate_assignment=True)
     value: int = Field()
 
     @dependency(value)
@@ -20,6 +22,7 @@ class MutualB(BaseModel):
 
 
 class NodeX(BaseModel):
+    model_config = ConfigDict(validate_default=True, validate_assignment=True)
     value: int = Field(default=0)
 
     @dependency(value)
@@ -28,6 +31,7 @@ class NodeX(BaseModel):
 
 
 class NodeY(BaseModel):
+    model_config = ConfigDict(validate_default=True, validate_assignment=True)
     value: int = Field(default=0)
 
     @dependency(value)
@@ -36,6 +40,7 @@ class NodeY(BaseModel):
 
 
 class Ring1(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     value: int = Field(default=0)
 
     @dependency(value)
@@ -44,6 +49,7 @@ class Ring1(BaseModel):
 
 
 class Ring2(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     value: int = Field(default=0)
 
     @dependency(value)
@@ -52,6 +58,7 @@ class Ring2(BaseModel):
 
 
 class Ring3(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     value: int = Field(default=0)
 
     @dependency(value)
