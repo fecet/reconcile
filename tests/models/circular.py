@@ -7,9 +7,7 @@ class MutualA(BaseModel):
     value: int = Field()
 
     @dependency(value)
-    def _(self, b: "MutualB") -> int | None:
-        if b.value is None:
-            return None
+    def _(self, b: "MutualB") -> int:
         return b.value + 1
 
 
@@ -17,9 +15,7 @@ class MutualB(BaseModel):
     value: int = Field()
 
     @dependency(value)
-    def _(self, a: MutualA) -> int | None:
-        if a.value is None:
-            return None
+    def _(self, a: MutualA) -> int:
         return a.value + 1
 
 

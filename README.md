@@ -37,83 +37,89 @@ complete model
 
 如果一个字段需要在 complete state 中存在，但它的来源在模型外部，那么它就适合交给 `reconcile`。
 
+这类问题通常适合 `reconcile`：
+
+- 某个字段的值来自另一组配置模型
+- 多个模型需要在“完成态”上做一致性检查
+- 你希望保留 Pydantic 的字段约束和类型系统，但把最终补全放到第二阶段
+
+这类问题通常不适合 `reconcile`：
+
+- 值本来就应该在构造时直接传入
+- 你需要通用服务定位或生命周期管理容器
+- 你希望未完成对象也具备稳定的序列化和业务语义
+
 ## 核心概念
 
-### participant
+这里最重要的三个概念是：
 
-传给 `reconcile(*participants)` 的每个对象都是 participant。
-
-- 它可以是提供值的模型
-- 也可以是消费这些值的模型
-- 一个对象可以同时扮演两种角色
-
-### partial model
-
-partial model 是“已经通过 Pydantic 构造，但还没有完成 reconcile”的对象。
-
-- 它允许某些 derived required fields 暂时缺失
-- 它适合被组装、组合、再传入 `reconcile`
-- 它不是稳定的业务完成态
-
-### complete model
-
-complete model 是 `reconcile()` 完成后的对象。
-
-- 必需字段已经补齐，或明确报错
-- cross-object validator 已经运行
-- 字段约束已经按最终值校验
+- `participant`
+  传给 `reconcile(*participants)` 的对象。它可以提供值，也可以消费值；一个对象也可以同时扮演两种角色。
+- `partial model`
+  已经通过 Pydantic 构造，但还没有完成 reconcile 的对象。它允许某些 derived required fields 暂时缺失，适合先组装再补全。
+- `complete model`
+  `reconcile()` 完成后的对象。此时必需字段已经补齐，cross-object validator 已经运行，字段约束也按最终值校验过。
 
 ## Public API
 
-### `@dependency(field)`
+- `@dependency(field)`
+  声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。字段 provider 的方法名通常直接命名为 `_`。
+- `@dependency`
+  声明一个 cross-object validator。它不为字段产出值，只检查 participant 之间的语义关系；如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过。
+- `Unresolvable`
+  provider 内部抛出此异常表示"虽然依赖存在，但当前无法提供值"，效果等同于依赖缺失时的 fallback。
+- `reconcile(*participants)`
+  把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。更完整的调用方式见下方「详细示例」。
 
-声明一个字段 provider。
-
-- 它为某个字段提供派生值
-- 参数按类型从其他 participant 中解析
-- 如果字段已经被手动赋值，provider 不会覆盖它
-- 方法名本身不参与解析，建议使用描述性的英文名称
+## 详细示例
 
 ```python
-class Scheduler(BaseModel):
-    num_steps: int = Field()
+from pydantic import BaseModel, Field
 
-    @dependency(num_steps)
-    def derive_num_steps(self, training: TrainingSpec) -> int:
+from reconcile import dependency, reconcile
+
+
+class TrainingSpec(BaseModel):
+    num_steps: int = 2000
+    lr: float = 3e-4
+    scheduler_kind: str = "cosine"
+
+
+class JobSpec(BaseModel):
+    training: TrainingSpec = Field()  # Nested participant: filled with the TrainingSpec object itself.
+    total_steps: int = Field()  # Required derived field: must exist after reconcile().
+    effective_lr: float = Field(default=1e-4)  # Fallback default if the provider cannot run.
+    scheduler_label: str = Field(default="constant")  # Another derived field with fallback default.
+    warmup_steps: int = 100  # Normal local field checked by a cross-object validator.
+
+    @dependency(training)
+    def _(self, training: TrainingSpec) -> TrainingSpec:
+        return training
+
+    @dependency(total_steps)
+    def _(self, training: TrainingSpec) -> int:
         return training.num_steps
-```
 
-在这个例子里，`num_steps` 在 complete model 中必需，但允许在构造阶段暂缺。
+    @dependency(effective_lr)
+    def _(self, training: TrainingSpec) -> float:
+        return training.lr
 
-### `@dependency`
-
-声明一个 cross-object validator。
-
-- 它不为字段产出值
-- 它用来检查 participant 之间的语义关系
-- 它在 reconcile 的 validator 阶段运行
-
-```python
-class Optimizer(BaseModel):
-    lr: float = 1e-3
+    @dependency(scheduler_label)
+    def _(self, training: TrainingSpec) -> str:
+        return training.scheduler_kind
 
     @dependency
-    def _lr_positive(self, training: TrainingSpec) -> None:
-        if self.lr <= 0:
-            raise ValueError("lr must be positive")
+    def validate_warmup(self, training: TrainingSpec) -> None:
+        if self.warmup_steps >= training.num_steps:
+            raise ValueError("warmup must be smaller than total steps")
+
+
+training = TrainingSpec()
+job = JobSpec()
+reconcile(job, training)
 ```
 
-### `reconcile(*participants)`
-
-把一组 participant 从 partial state 推进到 complete state，并返回原顺序的对象元组。
-
-```python
-scheduler, training, optimizer = reconcile(
-    Scheduler(),
-    TrainingSpec(num_steps=2000),
-    Optimizer(lr=1e-3),
-)
-```
+内部实现、维护约定和最新流程图见 [AGENTS.md](./AGENTS.md)。
 
 ## 语义保证
 
@@ -123,10 +129,10 @@ scheduler, training, optimizer = reconcile(
 - 手动赋值优先于 provider 派生
 - `Field(default=...)` 和 `default_factory=...` 可以作为 unresolved fallback
 - 无 target 的 `@dependency` 在缺依赖时默认跳过
-- `Optional[T] = None` 会在缺依赖时显式收到 `None`
 - 类型解析支持按实例类型和继承关系匹配
 - 多个候选同时匹配同一类型时会报歧义错误
 - 一个字段只能有一个 provider
+- 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
 - 字段约束按 complete state 的最终值校验
 
 ## 不保证的内容
@@ -138,88 +144,3 @@ scheduler, training, optimizer = reconcile(
 - `reconcile` 不是通用 DI 容器
 - 普通多分支 union 不会自动解析
 - 不应依赖 provider 的声明顺序来获得行为
-
-## 最小示例
-
-### 外部实例化字段
-
-```python
-from pydantic import BaseModel, Field
-
-from reconcile import dependency, reconcile
-
-
-class TrainingSpec(BaseModel):
-    num_steps: int = 1000
-
-
-class AdamWOptimizerSpec(BaseModel):
-    lr: float = 1e-3
-
-
-class LinearWarmupSchedulerSpec(BaseModel):
-    warmup_steps: int = 0
-    num_steps: int = Field()
-    lr: float = Field()
-
-    @dependency(num_steps)
-    def derive_num_steps(self, training: TrainingSpec) -> int:
-        return training.num_steps
-
-    @dependency(lr)
-    def derive_lr(self, optimizer: AdamWOptimizerSpec) -> float:
-        return optimizer.lr
-
-
-scheduler, *_ = reconcile(
-    LinearWarmupSchedulerSpec(warmup_steps=100),
-    TrainingSpec(num_steps=2000),
-    AdamWOptimizerSpec(lr=1e-3),
-)
-
-assert scheduler.num_steps == 2000
-assert scheduler.lr == 1e-3
-```
-
-### 可选依赖与 fallback
-
-```python
-from pydantic import BaseModel, Field
-
-from reconcile import dependency, reconcile
-
-
-class TrainingSpec(BaseModel):
-    num_steps: int = 1000
-
-
-class OptionalDeps(BaseModel):
-    label: str = Field()
-
-    @dependency
-    def check(self, training: TrainingSpec | None = None) -> None:
-        if training is not None and training.num_steps < 0:
-            raise ValueError("negative steps")
-
-    @dependency(label)
-    def derive_label(self, training: TrainingSpec | None = None) -> str:
-        if training is None:
-            return "default"
-        return f"steps={training.num_steps}"
-
-
-(obj,) = reconcile(OptionalDeps())
-assert obj.label == "default"
-```
-
-## 适用场景
-
-- 某个字段的值来自另一组配置模型
-- 多个模型需要在“完成态”上做一致性检查
-- 你希望保留 Pydantic 的字段约束和类型系统，但把最终补全放到第二阶段
-
-## 不适用场景
-
-- 值本来就应该在构造时直接传入
-- 你需要通用服务定位或生命周期管理容器
-- 你希望未完成对象也具备稳定的序列化和业务语义

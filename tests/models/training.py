@@ -41,11 +41,19 @@ class AdamWOptimizerSpec(BaseModel):
             raise ValueError(f"lr={self.lr} must be positive")
 
 
-class LinearWarmupSchedulerSpec(BaseModel):
+class WorkflowSpec(BaseModel):
     warmup_steps: int = 0
     lr_min: float = 0.0
+    training: TrainingSpec = Field()
     num_steps: int = Field()
     lr: float = Field()
+    batch_size: int = Field(default=32, ge=1, le=10000)
+    effective_lr: float = Field(default=0.001)
+    tags: list[str] = Field(default_factory=list)
+
+    @dependency(training)
+    def _(self, training: "TrainingSpec") -> TrainingSpec:
+        return training
 
     @dependency(num_steps)
     def _(self, t: TrainingSpec) -> int:
@@ -56,20 +64,6 @@ class LinearWarmupSchedulerSpec(BaseModel):
     @dependency(lr)
     def _(self, o: AdamWOptimizerSpec) -> float:
         return o.lr
-
-
-class NeedsLoss(BaseModel):
-    name: str = Field()
-
-    @dependency(name)
-    def _(self, loss: BaseLoss) -> str:
-        return type(loss).__name__
-
-
-class DataLoaderSpec(BaseModel):
-    batch_size: int = Field(default=32, ge=1, le=10000)
-    effective_lr: float = Field(default=0.001)
-    tags: list[str] = Field(default_factory=list)
 
     @dependency(batch_size)
     def _(self, t: TrainingSpec) -> int:
@@ -84,3 +78,9 @@ class DataLoaderSpec(BaseModel):
         return [f"steps={t.num_steps}"]
 
 
+class NeedsLoss(BaseModel):
+    name: str = Field()
+
+    @dependency(name)
+    def _(self, loss: BaseLoss) -> str:
+        return type(loss).__name__
