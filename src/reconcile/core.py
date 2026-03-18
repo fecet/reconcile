@@ -170,9 +170,10 @@ class ReconcileSession:
             self.demote_models()
             self.run_cross_validators()
             self.validate_fields()
-        finally:
+        except:
             self.demote_models()
             self.restore_defaults()
+            raise
         return self.participants
 
     def _build_slots(self, obj: BaseModel, cls: type[BaseModel]) -> dict[str, FieldSlot]:
