@@ -28,7 +28,7 @@ mypy = "mypy src/ tests/"
 python = ">=3.12"
 pydantic = ">=2"
 pytest = "*"
+reconcile = { path = "." }
 
 [pypi-dependencies]
-reconcile = { path = ".", editable = true }
 mypy = "*"
