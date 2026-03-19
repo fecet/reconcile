@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from models.training import (
     AdamWOptimizerSpec,
@@ -304,6 +304,15 @@ class TestFeatures:
         ).expect(
             workflow={"tags": ["steps=500"]},
         )
+
+    def test_extra_fields_skipped_in_validation(self):
+        class FlexibleWorkflow(WorkflowSpec):
+            model_config = ConfigDict(extra="allow")
+
+        obj = FlexibleWorkflow(custom_flag=True)
+        (obj, _, _) = reconcile(obj, TrainingSpec(num_steps=42), AdamWOptimizerSpec())
+        assert obj.num_steps == 42
+        assert obj.custom_flag is True
 
 
 class TestHitchhike:

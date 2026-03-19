@@ -250,7 +250,9 @@ class ReconcileSession:
                     raise ValueError(
                         f"{cls.__name__}.{dep.field_name}: required but unresolved"
                     )
-            for field_name in set(fields) | obj.model_fields_set:
+            for field_name in (
+                set(fields) | obj.model_fields_set
+            ) & cls.model_fields.keys():
                 fi = cls.model_fields[field_name]
                 if fi.metadata:
                     ta: TypeAdapter[Any] = TypeAdapter(
