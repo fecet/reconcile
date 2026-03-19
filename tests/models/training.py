@@ -77,6 +77,10 @@ class WorkflowSpec(BaseModel):
     def _(self, t: TrainingSpec) -> list[str]:
         return [f"steps={t.num_steps}"]
 
+    @dependency(tags)
+    def _(self, o: AdamWOptimizerSpec) -> list[str]:
+        return [f"lr={o.lr}"]
+
 
 class NeedsLoss(BaseModel):
     name: str = Field()

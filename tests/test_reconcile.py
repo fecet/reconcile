@@ -286,18 +286,18 @@ class TestFeatures:
         (c,) = reconcile(Constrained())
         assert c.value == 5
 
-    def test_multiple_deps_on_field_rejected(self):
-        with pytest.raises(TypeError, match="Multi.items: multiple providers"):
-            class Multi(BaseModel):
-                items: list[str] = Field(default_factory=list)
-
-                @dependency(items)
-                def _a(self, t: TrainingSpec) -> list[str]:
-                    return [f"steps={t.num_steps}"]
-
-                @dependency(items)
-                def _b(self, o: AdamWOptimizerSpec) -> list[str]:
-                    return [f"lr={o.lr}"]
+    def test_multiple_providers_fallback(self):
+        # TrainingSpec not in pool → tags falls back to AdamWOptimizerSpec provider
+        reconcile_case(
+            workflow=WorkflowSpec(
+                training=TrainingSpec(num_steps=500),
+                num_steps=500,
+                lr=0.01,
+            ),
+            optimizer=AdamWOptimizerSpec(lr=0.01),
+        ).expect(
+            workflow={"tags": ["lr=0.01"]},
+        )
 
 
 class TestCircular:

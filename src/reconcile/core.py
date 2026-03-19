@@ -45,15 +45,13 @@ class Dependency(property):
             deps = self._pending.pop(id(fi), [])
             if not deps:
                 continue
-            if len(deps) > 1:
-                raise TypeError(f"{owner.__name__}.{fname}: multiple providers")
-            [dep] = deps
             has_factory = fi.default_factory is not None
-            dep.field_name = fname
-            dep.required = fi.default is PydanticUndefined and not has_factory
-            if not has_factory and dep.required:
+            for dep in deps:
+                dep.field_name = fname
+                dep.required = fi.default is PydanticUndefined and not has_factory
+            if not has_factory and deps[0].required:
                 fi.default = None
-            ann[fname] = typing.Annotated[hint, fi, dep]
+            ann[fname] = typing.Annotated[hint, fi, *deps]
             if has_factory:
                 delattr(owner, fname)
             else:
@@ -84,7 +82,7 @@ RESOLVING = Sentinel("RESOLVING")
 class FieldSlot:
     owner: BaseModel
     field_name: str
-    provider: Dependency
+    providers: list[Dependency]
     saved_default: Any
 
 
@@ -133,16 +131,18 @@ class Pool:
 
     def deps(self, cls: type[BaseModel]) -> list[Dependency]:
         if cls not in self._deps:
-            result = [
-                d
-                for _, d in inspect.getmembers(cls, lambda a: isinstance(a, Dependency))
-            ]
-            seen = {id(d) for d in result}
+            # Metadata preserves declaration order from _pending
+            result: list[Dependency] = []
+            seen: set[int] = set()
             for fi in cls.model_fields.values():
                 for m in fi.metadata:
                     if isinstance(m, Dependency) and id(m) not in seen:
                         result.append(m)
                         seen.add(id(m))
+            for _, d in inspect.getmembers(cls, lambda a: isinstance(a, Dependency)):
+                if id(d) not in seen:
+                    result.append(d)
+                    seen.add(id(d))
             self._deps[cls] = result
         return self._deps[cls]
 
@@ -177,15 +177,18 @@ class ReconcileSession:
         return self.participants
 
     def _build_slots(self, obj: BaseModel, cls: type[BaseModel]) -> dict[str, FieldSlot]:
+        by_field: dict[str, list[Dependency]] = {}
+        for dep in self.pool.deps(cls):
+            if dep.field_name is not None and dep.field_name not in obj.model_fields_set:
+                by_field.setdefault(dep.field_name, []).append(dep)
         return {
-            dep.field_name: FieldSlot(
+            fname: FieldSlot(
                 owner=obj,
-                field_name=dep.field_name,
-                provider=dep,
-                saved_default=obj.__dict__[dep.field_name],
+                field_name=fname,
+                providers=providers,
+                saved_default=obj.__dict__[fname],
             )
-            for dep in self.pool.deps(cls)
-            if dep.field_name is not None and dep.field_name not in obj.model_fields_set
+            for fname, providers in by_field.items()
         }
 
     def promote_models(self) -> None:
@@ -263,9 +266,12 @@ class ReconcileSession:
             return cls.__getattr__(obj, name)  # type: ignore[attr-defined]
         if slot not in self.resolved:
             self.resolved[slot] = RESOLVING
-            self.resolved[slot] = self.pool.try_call(
-                slot.provider.fn.__get__(obj, cls)
-            )
+            result = UNRESOLVED
+            for provider in slot.providers:
+                result = self.pool.try_call(provider.fn.__get__(obj, cls))
+                if result is not UNRESOLVED:
+                    break
+            self.resolved[slot] = result
         result = self.resolved[slot]
         if result is RESOLVING:
             raise self._cycle_error(slot)

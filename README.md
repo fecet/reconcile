@@ -63,7 +63,7 @@ complete model
 ## Public API
 
 - `@dependency(field)`
-  声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。字段 provider 的方法名通常直接命名为 `_`。
+  声明一个字段 provider。它为某个字段提供派生值，参数按类型从其他 participant 中解析；如果字段已经被手动赋值，provider 不会覆盖它。同一字段可以声明多个 provider，按声明顺序尝试，第一个能 resolve 的赢。字段 provider 的方法名通常直接命名为 `_`。
 - `@dependency`
   声明一个 cross-object validator。它不为字段产出值，只检查 participant 之间的语义关系；如果这次 `reconcile()` 没有传入所需 participant，这条 validator 会被跳过。
 - `Unresolvable`
@@ -85,10 +85,14 @@ class TrainingSpec(BaseModel):
     scheduler_kind: str = "cosine"
 
 
+class OptimizerSpec(BaseModel):
+    lr: float = 1e-3
+
+
 class JobSpec(BaseModel):
     training: TrainingSpec = Field()  # Nested participant: filled with the TrainingSpec object itself.
     total_steps: int = Field()  # Required derived field: must exist after reconcile().
-    effective_lr: float = Field(default=1e-4)  # Fallback default if the provider cannot run.
+    effective_lr: float = Field(default=1e-4)  # Multiple providers: first resolvable wins, then default.
     scheduler_label: str = Field(default="constant")  # Another derived field with fallback default.
     warmup_steps: int = 100  # Normal local field checked by a cross-object validator.
 
@@ -99,6 +103,10 @@ class JobSpec(BaseModel):
     @dependency(total_steps)
     def _(self, training: TrainingSpec) -> int:
         return training.num_steps
+
+    @dependency(effective_lr)
+    def _(self, opt: OptimizerSpec) -> float:
+        return opt.lr
 
     @dependency(effective_lr)
     def _(self, training: TrainingSpec) -> float:
@@ -116,7 +124,8 @@ class JobSpec(BaseModel):
 
 training = TrainingSpec()
 job = JobSpec()
-reconcile(job, training)
+reconcile(job, training)  # effective_lr ← TrainingSpec.lr (OptimizerSpec absent)
+reconcile(job, training, OptimizerSpec(lr=5e-4))  # effective_lr ← OptimizerSpec.lr
 ```
 
 内部实现、维护约定和最新流程图见 [AGENTS.md](./AGENTS.md)。
@@ -131,7 +140,7 @@ reconcile(job, training)
 - 无 target 的 `@dependency` 在缺依赖时默认跳过
 - 类型解析支持按实例类型和继承关系匹配
 - 多个候选同时匹配同一类型时会报歧义错误
-- 一个字段只能有一个 provider
+- 一个字段可以有多个 provider，按声明顺序尝试，第一个能 resolve 的赢
 - 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
 - 字段约束按 complete state 的最终值校验
 
@@ -143,4 +152,3 @@ reconcile(job, training)
 - partial model 的 `model_dump()` 形状不是公开契约
 - `reconcile` 不是通用 DI 容器
 - 普通多分支 union 不会自动解析
-- 不应依赖 provider 的声明顺序来获得行为
