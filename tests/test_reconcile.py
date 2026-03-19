@@ -445,3 +445,22 @@ class TestCircular:
         assert type(b).__name__ == "MutualB"
         assert a.value is None
         assert b.value is None
+
+
+class TestExtraFields:
+    def test_extra_allow_fields_skipped_in_validation(self):
+        """model_fields_set may contain names absent from model_fields when extra='allow'."""
+        from pydantic import ConfigDict
+
+        class Flexible(BaseModel):
+            model_config = ConfigDict(extra="allow")
+            value: int | None = Field(default=None)
+
+            @dependency(value)
+            def _(self, t: TrainingSpec) -> int:
+                return t.num_steps
+
+        obj = Flexible(decoder_start_token_id=1)
+        (obj, _) = reconcile(obj, TrainingSpec(num_steps=42))
+        assert obj.value == 42
+        assert obj.decoder_start_token_id == 1

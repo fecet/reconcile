@@ -251,7 +251,9 @@ class ReconcileSession:
                         f"{cls.__name__}.{dep.field_name}: required but unresolved"
                     )
             for field_name in set(fields) | obj.model_fields_set:
-                fi = cls.model_fields[field_name]
+                fi = cls.model_fields.get(field_name)
+                if fi is None:
+                    continue
                 if fi.metadata:
                     ta: TypeAdapter[Any] = TypeAdapter(
                         typing.Annotated[fi.annotation, *fi.metadata]
