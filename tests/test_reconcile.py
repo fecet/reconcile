@@ -94,7 +94,7 @@ class TestResolution:
         assert case.workflow.training is case.training
         assert case.optimizer.lr == case.workflow.lr
 
-    def test_skip_when_dependency_absent(self):
+    def test_hitchhike_resolves_from_manually_set_field(self):
         reconcile_case(
             workflow=WorkflowSpec(
                 warmup_steps=100,
@@ -106,9 +106,9 @@ class TestResolution:
             workflow={
                 "num_steps": 500,
                 "lr": 0.01,
-                "batch_size": 32,
+                "batch_size": 500,
                 "effective_lr": 0.001,
-                "tags": [],
+                "tags": ["steps=500"],
             }
         )
 
@@ -207,9 +207,10 @@ class TestFeatures:
         assert case.workflow.training.num_steps == 7
 
     def test_field_default_as_fallback(self):
+        training = TrainingSpec(num_steps=5000)
         reconcile_case(
-            workflow=WorkflowSpec(training=TrainingSpec(num_steps=5000), num_steps=5000, lr=0.01),
-            training=TrainingSpec(num_steps=5000),
+            workflow=WorkflowSpec(training=training, num_steps=5000, lr=0.01),
+            training=training,
             optimizer=AdamWOptimizerSpec(lr=0.01),
         ).expect(
             workflow={
@@ -223,20 +224,21 @@ class TestFeatures:
             workflow=WorkflowSpec(training=TrainingSpec(), num_steps=1000, lr=1e-3),
         ).expect(
             workflow={
-                "batch_size": 32,
+                "batch_size": 1000,
                 "effective_lr": 0.001,
-                "tags": [],
+                "tags": ["steps=1000"],
             },
         )
 
+        training = TrainingSpec(num_steps=5000)
         reconcile_case(
             workflow=WorkflowSpec(
-                training=TrainingSpec(num_steps=5000),
+                training=training,
                 num_steps=5000,
                 lr=0.01,
                 tags=["manual"],
             ),
-            training=TrainingSpec(num_steps=5000),
+            training=training,
             optimizer=AdamWOptimizerSpec(lr=0.01),
         ).expect(
             workflow={"tags": ["manual"]},
@@ -287,7 +289,7 @@ class TestFeatures:
         assert c.value == 5
 
     def test_multiple_providers_fallback(self):
-        # TrainingSpec not in pool → tags falls back to AdamWOptimizerSpec provider
+        # TrainingSpec hitchhikes → first tags provider wins
         reconcile_case(
             workflow=WorkflowSpec(
                 training=TrainingSpec(num_steps=500),
@@ -296,8 +298,38 @@ class TestFeatures:
             ),
             optimizer=AdamWOptimizerSpec(lr=0.01),
         ).expect(
-            workflow={"tags": ["lr=0.01"]},
+            workflow={"tags": ["steps=500"]},
         )
+
+
+class TestHitchhike:
+    def test_hitchhike_not_returned(self):
+        training = TrainingSpec(num_steps=500)
+        workflow = WorkflowSpec(
+            warmup_steps=100,
+            training=training,
+            num_steps=500,
+            lr=0.01,
+        )
+        results = reconcile(workflow)
+        assert len(results) == 1
+        assert results[0] is workflow
+
+    def test_hitchhike_dedup_with_explicit(self):
+        training = TrainingSpec(num_steps=500)
+        workflow = WorkflowSpec(training=training, num_steps=500, lr=0.01)
+        (w, t) = reconcile(workflow, training)
+        assert w.batch_size == 500
+
+    def test_hitchhike_conflict(self):
+        workflow = WorkflowSpec(
+            training=TrainingSpec(num_steps=100),
+            num_steps=100,
+            lr=0.01,
+        )
+        other_training = TrainingSpec(num_steps=200)
+        with pytest.raises(TypeError, match="Ambiguous"):
+            reconcile(workflow, other_training)
 
 
 class TestCircular:

@@ -149,11 +149,23 @@ class Pool:
 class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
-        self.pool = Pool(participants)
+        all_objs = list(participants)
+        seen_ids = {id(obj) for obj in all_objs}
+        # BFS: discover explicitly-provided BaseModel fields (hitchhike)
+        queue = [obj for obj in all_objs if isinstance(obj, BaseModel)]
+        while queue:
+            obj = queue.pop(0)
+            for field_name in obj.model_fields_set:
+                value = obj.__dict__.get(field_name)
+                if isinstance(value, BaseModel) and id(value) not in seen_ids:
+                    seen_ids.add(id(value))
+                    all_objs.append(value)
+                    queue.append(value)
+        self.pool = Pool(tuple(all_objs))
         self.owners: dict[int, BaseModel] = {}
         self.owner_cls: dict[int, type[BaseModel]] = {}
         self.slots: dict[int, dict[str, FieldSlot]] = {}
-        for obj in participants:
+        for obj in all_objs:
             if isinstance(obj, BaseModel):
                 cls = type(obj)
                 self.owners[id(obj)] = obj

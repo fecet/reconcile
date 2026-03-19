@@ -78,6 +78,12 @@ reconcile(*participants)
 reconcile(*participants)
         │
         ▼
+ReconcileSession.__init__()
+        │
+        ├── hitchhike discovery (BFS)
+        │     └── scan model_fields_set for BaseModel instances
+        │
+        ▼
 ReconcileSession.run()
         │
         ├── promote_models()
