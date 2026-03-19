@@ -14,7 +14,7 @@ from models.training import (
     WorkflowSpec,
 )
 
-from reconcile import dependency, reconcile
+from reconcile import Unresolvable, dependency, reconcile
 
 
 class ReconcileCase(SimpleNamespace):
@@ -304,6 +304,17 @@ class TestFeatures:
         ).expect(
             workflow={"tags": ["steps=500"]},
         )
+
+    def test_provider_can_raise_unresolvable_for_fallback(self):
+        class RetryLater(BaseModel):
+            value: int = Field(default=5)
+
+            @dependency(value)
+            def _(self, _t: TrainingSpec) -> int:
+                raise Unresolvable
+
+        (obj, _) = reconcile(RetryLater(), TrainingSpec())
+        assert obj.value == 5
 
     def test_extra_fields_skipped_in_validation(self):
         class FlexibleWorkflow(WorkflowSpec):

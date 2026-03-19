@@ -20,13 +20,15 @@
 reconcile/
 ├── AGENTS.md          <- 人类 + AI 维护文档
 ├── README.md          <- 用户文档
-├── src/reconcile.py   <- 单文件核心实现
+├── src/reconcile/
+│   ├── __init__.py    <- public API re-export
+│   ├── core.py        <- 核心 reconcile 实现
+│   ├── mypy.py        <- mypy plugin
+│   └── sentinel.py    <- sentinel helper
 ├── tests/
 │   ├── README.md      <- 测试组织约定
 │   ├── models/        <- 共享测试模型
 │   └── test_reconcile.py
-└── docs/
-    └── getattr-proxy.md  <- 方案演进记录
 ```
 
 ## 核心类型
@@ -38,27 +40,32 @@ reconcile(*participants)
 ┌──────────────────────────────┐
 │      ReconcileSession        │
 │ - pool                       │
-│ - models: ReconcileModel[]   │
+│ - states: State[]            │
 │ - resolution_stack           │
-│ - resolving_fields           │
 └──────────────┬───────────────┘
                │
       ┌────────┴────────┐
       ▼                 ▼
 ┌──────────────┐   ┌──────────────────┐
-│     Pool     │   │  ReconcileModel  │
-│ type -> obj  │   │ - owner          │
-│ resolution   │   │ - owner_cls      │
-└──────────────┘   │ - fields[]       │
+│     Pool     │   │      State       │
+│ type -> obj  │   │ - obj            │
+│ resolution   │   │ - cls            │
+└──────────────┘   │ - slots{}        │
                    └────────┬─────────┘
                             │
                             ▼
                    ┌──────────────────┐
-                   │ ReconcileField   │
+                   │    FieldSlot     │
                    │ - field_name     │
-                   │ - provider       │
+                   │ - providers[]    │
                    │ - saved_default  │
+                   │ - required       │
+                   │ - result         │
                    └──────────────────┘
+
+_deps(cls) (cached):
+- field_providers
+- cross_validators
 ```
 
 职责分层：
@@ -67,10 +74,12 @@ reconcile(*participants)
   只负责按类型解析 participant，并处理歧义错误
 - `ReconcileSession`
   只负责一次 `reconcile()` 调用的全局流程和环检测状态
-- `ReconcileModel`
-  负责单个 participant 的运行时状态，包括 proxy 切换和默认值恢复
-- `ReconcileField`
-  负责单个待解析字段的 provider、fallback 和结果写回
+- `State`
+  负责把 `obj`、原始 `cls` 和待解析 `slots` 绑成具名状态，避免位置式 tuple
+- `FieldSlot`
+  负责单个待解析字段的 provider、fallback 默认值、required 语义和解析状态
+- `_deps(cls)`
+  负责按类缓存字段 provider 和 cross-object validator
 
 ## reconcile 流程
 
@@ -83,64 +92,68 @@ ReconcileSession.__init__()
         ├── hitchhike discovery (BFS)
         │     └── scan model_fields_set for BaseModel instances
         │
+        ├── build Pool(all discovered participants)
+        │
+        └── build State for each BaseModel
+        │
         ▼
 ReconcileSession.run()
         │
-        ├── promote_models()
-        │     └── ReconcileModel.promote()
-        │           ├── pop unresolved dep fields
-        │           └── owner.__class__ = ProxyClass
+        ├── promote phase
+        │     ├── pop unresolved dep fields
+        │     └── owner.__class__ = ProxyClass
         │
-        ├── resolve_fields()
-        │     └── ReconcileModel.resolve_fields()
-        │           └── getattr(owner, field_name)
+        ├── resolve phase
+        │     └── _resolve_slot(slot)
         │
-        ├── demote_models()
+        ├── commit phase
+        │     └── write resolved value or fallback default
+        │
+        ├── demote phase
         │     └── owner.__class__ = owner_cls
         │
         ├── run_cross_validators()
-        │     └── @dependency without target
+        │     └── cached _deps(cls)[1]
         │
         ├── validate_fields()
         │     ├── required field check
         │     └── final TypeAdapter validation
         │
         └── finally
-              ├── demote_models()
-              └── restore_defaults()
+              ├── demote phase
+              └── restore default fallback
 ```
 
 关键时序：
 
 - fallback 默认值在 Pydantic 构造阶段就已经存在于实例中
-- `promote_models()` 只是把未手动设置的 dep 字段从 `__dict__` 中临时 `pop` 出来
-- provider 成功时写入结果
-- provider 返回 `None` 或缺依赖时，`ReconcileField.apply_resolution()` 立即恢复 `saved_default`
-- `finally -> restore_defaults()` 是异常安全兜底，不是主路径第一次设置默认值
+- promote phase 只是把未手动设置的 dep 字段从 `__dict__` 中临时 `pop` 出来
+- provider 成功时先写入 `FieldSlot.result`，commit phase 再真正写回对象
+- provider 返回 `None` 会保留 `None`，provider 缺依赖或抛出 `Unresolvable` 时会落到 `UNRESOLVED`
+- proxy 读取到 `UNRESOLVED` 时返回 `saved_default`，commit phase 再把 fallback 默认值写回对象
+- `finally` 中的 default restore 是异常安全兜底，不是主路径第一次设置默认值
 
 ## proxy 字段解析路径
 
 ```text
 ProxyClass.__getattr__(name)
         │
-        ├── field in model.fields ?
-        │     └── no  -> owner_cls.__getattr__
+        ├── field in slots ?
+        │     └── no  -> cls.__getattr__
         │
-        ├── field in resolving_fields ?
-        │     └── yes -> Cycle detected
+        ├── slot.result is RESOLVING ?
+        │     └── yes -> Cycle detected from resolution_stack
         │
-        ├── push field to resolution_stack
+        ├── slot.result = RESOLVING
+        ├── push slot to resolution_stack
         │
         ├── pool.try_call(provider)
         │     └── provider may recursively read other dep fields
         │
-        ├── ReconcileField.apply_resolution(result)
-        │     ├── result is None -> restore saved_default
-        │     └── else           -> setattr(owner, field, result)
+        ├── slot.result = value | UNRESOLVED
         │
         └── finally
-              ├── remove field from resolving_fields
-              └── pop field from resolution_stack
+              └── pop slot from resolution_stack
 ```
 
 ## 维护约定
@@ -163,5 +176,4 @@ pixi run test
 公开 API / 语义变化   ──► README.md
 内部实现 / 维护约定   ──► AGENTS.md
 测试结构 / 模型复用   ──► tests/README.md
-方案探索 / 历史记录    ──► docs/getattr-proxy.md
 ```

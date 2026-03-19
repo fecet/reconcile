@@ -4,4 +4,6 @@
 ``reconcile`` resolves all dependencies to a consistent state.
 """
 
-from reconcile.core import dependency, reconcile
+from reconcile.core import Unresolvable as Unresolvable
+from reconcile.core import dependency as dependency
+from reconcile.core import reconcile as reconcile

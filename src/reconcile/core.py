@@ -1,5 +1,6 @@
 """Core implementation of reconcile — dependency resolution engine."""
 
+import functools
 import inspect
 import typing
 from collections import deque
@@ -23,21 +24,19 @@ except ImportError:
 # replacing the attribute with ModelPrivateAttr during model creation.
 class Dependency(property):
     fn: Callable[..., Any]
-    field_name: str | None
     required: bool
-    target: Any
 
     _pending: typing.ClassVar[dict[int, list["Dependency"]]] = {}
 
-    def __init__(self, fn: Callable[..., Any], *, target: Any = None) -> None:
+    def __init__(
+        self, fn: Callable[..., Any], *, field: FieldInfo | None = None
+    ) -> None:
         self.fn = fn
-        self.field_name = None
         self.required = False
-        self.target = target
-        if isinstance(target, FieldInfo):
-            self._pending.setdefault(id(target), []).append(self)
+        if field is not None:
+            self._pending.setdefault(id(field), []).append(self)
 
-    def __set_name__(self, owner: type, name: str) -> None:
+    def __set_name__(self, owner: type, _name: str) -> None:
         ann = dict(owner.__annotations__)
         for fname, hint in ann.items():
             fi = owner.__dict__.get(fname)
@@ -47,10 +46,10 @@ class Dependency(property):
             if not deps:
                 continue
             has_factory = fi.default_factory is not None
+            required = fi.default is PydanticUndefined and not has_factory
             for dep in deps:
-                dep.field_name = fname
-                dep.required = fi.default is PydanticUndefined and not has_factory
-            if not has_factory and deps[0].required:
+                dep.required = required
+            if required:
                 fi.default = None
             ann[fname] = typing.Annotated[hint, fi, *deps]
             if has_factory:
@@ -63,10 +62,10 @@ class Dependency(property):
 def dependency(arg: Any = None, /) -> Any:
     if callable(arg) and not isinstance(arg, FieldInfo):
         return Dependency(arg)
-    target = arg
+    field = arg if isinstance(arg, FieldInfo) else None
 
     def decorator(fn: Callable[..., Any]) -> Any:
-        return Dependency(fn, target=target)
+        return Dependency(fn, field=field)
 
     return decorator
 
@@ -75,6 +74,7 @@ class Unresolvable(Exception):
     pass
 
 
+PENDING = Sentinel("PENDING")
 UNRESOLVED = Sentinel("UNRESOLVED")
 RESOLVING = Sentinel("RESOLVING")
 
@@ -83,8 +83,56 @@ RESOLVING = Sentinel("RESOLVING")
 class FieldSlot:
     owner: BaseModel
     field_name: str
-    providers: list[Dependency]
+    providers: tuple[Dependency, ...]
     saved_default: Any
+    required: bool
+    result: Any = PENDING
+
+
+class State(typing.NamedTuple):
+    obj: BaseModel
+    cls: type[BaseModel]
+    slots: dict[str, FieldSlot]
+
+
+@functools.cache
+def _deps(
+    cls: type[BaseModel],
+) -> tuple[dict[str, tuple[Dependency, ...]], tuple[Dependency, ...]]:
+    field_providers: dict[str, tuple[Dependency, ...]] = {}
+    cross_validators: list[Dependency] = []
+    seen: set[int] = set()
+
+    for field_name, field_info in cls.model_fields.items():
+        providers: list[Dependency] = []
+        for metadata in field_info.metadata:
+            if isinstance(metadata, Dependency) and id(metadata) not in seen:
+                providers.append(metadata)
+                seen.add(id(metadata))
+        if providers:
+            field_providers[field_name] = tuple(providers)
+
+    for _, dep in inspect.getmembers(cls, lambda attr: isinstance(attr, Dependency)):
+        if id(dep) not in seen:
+            cross_validators.append(dep)
+            seen.add(id(dep))
+
+    return field_providers, tuple(cross_validators)
+
+
+def _discover_participants(participants: tuple[Any, ...]) -> tuple[Any, ...]:
+    all_objs = list(participants)
+    seen_ids = {id(obj) for obj in all_objs}
+    queue = deque(obj for obj in all_objs if isinstance(obj, BaseModel))
+    while queue:
+        obj = queue.popleft()
+        for field_name in obj.model_fields_set:
+            value = obj.__dict__.get(field_name)
+            if isinstance(value, BaseModel) and id(value) not in seen_ids:
+                seen_ids.add(id(value))
+                all_objs.append(value)
+                queue.append(value)
+    return tuple(all_objs)
 
 
 class Pool:
@@ -92,12 +140,12 @@ class Pool:
 
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self._data: dict[type, list[Any]] = {}
-        self._deps: dict[type, list[Dependency]] = {}
         for obj in participants:
             for cls in type(obj).__mro__:
                 if cls in self._EXCLUDED:
                     continue
                 self._data.setdefault(cls, []).append(obj)
+        self._ns = {cls.__name__: cls for cls in self._data}
 
     def resolve(self, requested: type) -> Any:
         candidates = self._data.get(requested, [])
@@ -111,12 +159,12 @@ class Pool:
         raise KeyError(requested)
 
     def call(self, fn: Callable[..., Any]) -> Any:
-        ns = {cls.__name__: cls for cls in self._data}
-        ns.update(getattr(fn, "__globals__", {}))
         kw: dict[str, Any] = {}
         if _AnnotationFormat is not None:
             kw["format"] = _AnnotationFormat.FORWARDREF
-        hints = typing.get_type_hints(fn, globalns=ns, **kw)
+        hints = typing.get_type_hints(
+            fn, globalns=self._ns, localns=getattr(fn, "__globals__", {}), **kw
+        )
         hints.pop("return", None)
         try:
             kwargs = {p: self.resolve(t) for p, t in hints.items()}
@@ -130,176 +178,129 @@ class Pool:
         except Unresolvable:
             return UNRESOLVED
 
-    def deps(self, cls: type[BaseModel]) -> list[Dependency]:
-        if cls not in self._deps:
-            # Metadata preserves declaration order from _pending
-            result: list[Dependency] = []
-            seen: set[int] = set()
-            for fi in cls.model_fields.values():
-                for m in fi.metadata:
-                    if isinstance(m, Dependency) and id(m) not in seen:
-                        result.append(m)
-                        seen.add(id(m))
-            for _, d in inspect.getmembers(cls, lambda a: isinstance(a, Dependency)):
-                if id(d) not in seen:
-                    result.append(d)
-                    seen.add(id(d))
-            self._deps[cls] = result
-        return self._deps[cls]
-
 
 class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
-        all_objs = list(participants)
-        seen_ids = {id(obj) for obj in all_objs}
-        # BFS: discover explicitly-provided BaseModel fields (hitchhike)
-        queue = deque(obj for obj in all_objs if isinstance(obj, BaseModel))
-        while queue:
-            obj = queue.popleft()
-            for field_name in obj.model_fields_set:
-                value = obj.__dict__.get(field_name)
-                if isinstance(value, BaseModel) and id(value) not in seen_ids:
-                    seen_ids.add(id(value))
-                    all_objs.append(value)
-                    queue.append(value)
-        self.pool = Pool(tuple(all_objs))
-        self.owners: dict[int, BaseModel] = {}
-        self.owner_cls: dict[int, type[BaseModel]] = {}
-        self.slots: dict[int, dict[str, FieldSlot]] = {}
+        all_objs = _discover_participants(participants)
+        self.pool = Pool(all_objs)
+        self.states: dict[int, State] = {}
         for obj in all_objs:
             if isinstance(obj, BaseModel):
                 cls = type(obj)
-                self.owners[id(obj)] = obj
-                self.owner_cls[id(obj)] = cls
-                self.slots[id(obj)] = self._build_slots(obj, cls)
+                field_providers, _ = _deps(cls)
+                slots = {
+                    field_name: FieldSlot(
+                        obj,
+                        field_name,
+                        providers,
+                        obj.__dict__[field_name],
+                        providers[0].required,
+                    )
+                    for field_name, providers in field_providers.items()
+                    if field_name not in obj.model_fields_set
+                }
+                self.states[id(obj)] = State(obj, cls, slots)
         self.proxy_classes: dict[type, type] = {}
-        self.resolved: dict[FieldSlot, Any] = {}
+        self.resolution_stack: list[FieldSlot] = []
 
     def run(self) -> tuple[Any, ...]:
         try:
-            self.promote_models()
-            self.resolve_fields()
-            self.commit_results()
-            self.demote_models()
+            for state in self.states.values():
+                if not state.slots:
+                    continue
+                for slot in state.slots.values():
+                    vars(state.obj).pop(slot.field_name)
+                state.obj.__class__ = self._proxy_class_for(state.cls)
+
+            for state in self.states.values():
+                for slot in state.slots.values():
+                    self._resolve_slot(slot)
+
+            for state in self.states.values():
+                for slot in state.slots.values():
+                    if slot.result is not UNRESOLVED:
+                        BaseModel.__setattr__(slot.owner, slot.field_name, slot.result)
+                    else:
+                        vars(slot.owner)[slot.field_name] = slot.saved_default
+
+            for state in self.states.values():
+                if type(state.obj) is not state.cls:
+                    state.obj.__class__ = state.cls
+
             self.run_cross_validators()
             self.validate_fields()
-        except:
-            self.demote_models()
-            self.restore_defaults()
+        except BaseException:
+            for state in self.states.values():
+                if type(state.obj) is not state.cls:
+                    state.obj.__class__ = state.cls
+                for slot in state.slots.values():
+                    if slot.field_name not in state.obj.__dict__:
+                        vars(state.obj)[slot.field_name] = slot.saved_default
             raise
         return self.participants
 
-    def _build_slots(
-        self, obj: BaseModel, cls: type[BaseModel]
-    ) -> dict[str, FieldSlot]:
-        by_field: dict[str, list[Dependency]] = {}
-        for dep in self.pool.deps(cls):
-            if (
-                dep.field_name is not None
-                and dep.field_name not in obj.model_fields_set
-            ):
-                by_field.setdefault(dep.field_name, []).append(dep)
-        return {
-            fname: FieldSlot(
-                owner=obj,
-                field_name=fname,
-                providers=providers,
-                saved_default=obj.__dict__[fname],
-            )
-            for fname, providers in by_field.items()
-        }
-
-    def promote_models(self) -> None:
-        for obj_id, fields in self.slots.items():
-            if not fields:
-                continue
-            obj = self.owners[obj_id]
-            for slot in fields.values():
-                vars(obj).pop(slot.field_name)
-            obj.__class__ = self._proxy_class_for(self.owner_cls[obj_id])
-
-    def resolve_fields(self) -> None:
-        for fields in self.slots.values():
-            for slot in fields.values():
-                getattr(slot.owner, slot.field_name)
-
-    def commit_results(self) -> None:
-        for slot, result in self.resolved.items():
-            if result is not UNRESOLVED:
-                BaseModel.__setattr__(slot.owner, slot.field_name, result)
-            else:
-                vars(slot.owner)[slot.field_name] = slot.saved_default
-
     def run_cross_validators(self) -> None:
-        for obj_id, cls in self.owner_cls.items():
-            obj = self.owners[obj_id]
-            for dep in self.pool.deps(cls):
-                if dep.field_name is not None:
-                    continue
-                self.pool.try_call(dep.fn.__get__(obj, cls))
+        for state in self.states.values():
+            _, cross_validators = _deps(state.cls)
+            for dep in cross_validators:
+                self.pool.try_call(dep.fn.__get__(state.obj, state.cls))
 
     def validate_fields(self) -> None:
-        for obj_id, cls in self.owner_cls.items():
-            obj = self.owners[obj_id]
-            fields = self.slots[obj_id]
-            for dep in self.pool.deps(cls):
-                if not dep.required or dep.field_name is None:
-                    continue
-                if dep.field_name not in obj.model_fields_set:
+        for state in self.states.values():
+            for slot in state.slots.values():
+                if slot.required and slot.field_name not in state.obj.model_fields_set:
                     raise ValueError(
-                        f"{cls.__name__}.{dep.field_name}: required but unresolved"
+                        f"{state.cls.__name__}.{slot.field_name}: required but unresolved"
                     )
             for field_name in (
-                set(fields) | obj.model_fields_set
-            ) & cls.model_fields.keys():
-                fi = cls.model_fields[field_name]
-                if fi.metadata:
-                    ta: TypeAdapter[Any] = TypeAdapter(
-                        typing.Annotated[fi.annotation, *fi.metadata]
-                    )
-                    ta.validate_python(getattr(obj, field_name))
-
-    def demote_models(self) -> None:
-        for obj_id, cls in self.owner_cls.items():
-            obj = self.owners[obj_id]
-            if type(obj) is not cls:
-                obj.__class__ = cls
-
-    def restore_defaults(self) -> None:
-        for fields in self.slots.values():
-            for slot in fields.values():
-                if slot.field_name not in slot.owner.__dict__:
-                    vars(slot.owner)[slot.field_name] = slot.saved_default
+                set(state.slots) | state.obj.model_fields_set
+            ) & state.cls.model_fields.keys():
+                field_info = state.cls.model_fields[field_name]
+                if field_info.metadata:
+                    TypeAdapter(
+                        typing.Annotated[field_info.annotation, *field_info.metadata]
+                    ).validate_python(getattr(state.obj, field_name))
 
     def _cycle_error(self, slot: FieldSlot) -> ValueError:
-        stack = [s for s, r in self.resolved.items() if r is RESOLVING]
-        path = stack[stack.index(slot) :] + [slot]
+        path = self.resolution_stack[self.resolution_stack.index(slot) :] + [slot]
         rendered = " -> ".join(
-            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}" for s in path
+            f"{self.states[id(s.owner)].cls.__name__}.{s.field_name}" for s in path
         )
         return ValueError(f"Cycle detected: {rendered}")
 
-    def _proxy_getattr(self, obj: BaseModel, name: str) -> Any:
-        oid = id(obj)
-        cls = self.owner_cls[oid]
-        slot = self.slots[oid].get(name)
-        if slot is None:
-            return cls.__getattr__(obj, name)  # type: ignore[attr-defined]
-        if slot not in self.resolved:
-            self.resolved[slot] = RESOLVING
+    def _resolve_slot(self, slot: FieldSlot) -> Any:
+        if slot.result is RESOLVING:
+            raise self._cycle_error(slot)
+        if slot.result is not PENDING:
+            return slot.result
+
+        state = self.states[id(slot.owner)]
+        slot.result = RESOLVING
+        self.resolution_stack.append(slot)
+        try:
             result = UNRESOLVED
             for provider in slot.providers:
-                result = self.pool.try_call(provider.fn.__get__(obj, cls))
+                result = self.pool.try_call(provider.fn.__get__(state.obj, state.cls))
                 if result is not UNRESOLVED:
                     break
-            self.resolved[slot] = result
-        result = self.resolved[slot]
-        if result is RESOLVING:
-            raise self._cycle_error(slot)
+            slot.result = result
+            return result
+        except BaseException:
+            slot.result = PENDING
+            raise
+        finally:
+            self.resolution_stack.pop()
+
+    def _proxy_getattr(self, obj: BaseModel, name: str) -> Any:
+        state = self.states[id(obj)]
+        slot = state.slots.get(name)
+        if slot is None:
+            return state.cls.__getattr__(state.obj, name)  # type: ignore[attr-defined]
+        result = self._resolve_slot(slot)
         return slot.saved_default if result is UNRESOLVED else result
 
-    def _proxy_class_for(self, cls: type) -> type:
+    def _proxy_class_for(self, cls: type[BaseModel]) -> type[BaseModel]:
         if cls not in self.proxy_classes:
 
             def __getattr__(obj: BaseModel, name: str) -> Any:
