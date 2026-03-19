@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/fecet/reconcile/compare/reconcile-v0.3.0...reconcile-v0.3.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* skip extra-allow fields in validation ([fb12058](https://github.com/fecet/reconcile/commit/fb120586726025aa8b32e739f23f8f3754d62f76))
+
 ## [0.3.0](https://github.com/fecet/reconcile/compare/reconcile-v0.2.2...reconcile-v0.3.0) (2026-03-19)
 
 
