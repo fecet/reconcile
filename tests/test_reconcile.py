@@ -41,12 +41,12 @@ class TestResolution:
             optimizer=AdamWOptimizerSpec(lr=1e-3),
         ).expect(
             workflow={
-                    "num_steps": 2000,
-                    "lr": 1e-3,
-                    "batch_size": 2000,
-                    "effective_lr": 1e-3,
-                    "tags": ["steps=2000"],
-                },
+                "num_steps": 2000,
+                "lr": 1e-3,
+                "batch_size": 2000,
+                "effective_lr": 1e-3,
+                "tags": ["steps=2000"],
+            },
             training={"num_steps": 2000},
             optimizer={"lr": 1e-3},
         )
@@ -83,12 +83,12 @@ class TestResolution:
         ).expect(
             optimizer={"lr": 3e-4},
             workflow={
-                    "num_steps": 5000,
-                    "lr": 3e-4,
-                    "batch_size": 5000,
-                    "effective_lr": 3e-4,
-                    "tags": ["steps=5000"],
-                },
+                "num_steps": 5000,
+                "lr": 3e-4,
+                "batch_size": 5000,
+                "effective_lr": 3e-4,
+                "tags": ["steps=5000"],
+            },
         )
         assert case.loss("logits", "labels") == "ce_loss(ignore_index=-100)"
         assert case.workflow.training is case.training
@@ -126,7 +126,9 @@ class TestResolution:
             "effective_lr": 0.001,
             "tags": [],
         }
-        assert WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).num_steps == 42
+        assert (
+            WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).num_steps == 42
+        )
         assert WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).lr == 0.5
         assert WorkflowSpec(training=TrainingSpec()).batch_size == 32
 
@@ -170,7 +172,9 @@ class TestErrors:
 class TestFeatures:
     def test_field_constraints_validated(self):
         with pytest.raises(ValueError, match="less than or equal to 10000"):
-            reconcile(WorkflowSpec(), TrainingSpec(num_steps=99999), AdamWOptimizerSpec())
+            reconcile(
+                WorkflowSpec(), TrainingSpec(num_steps=99999), AdamWOptimizerSpec()
+            )
 
         reconcile_case(
             workflow=WorkflowSpec(),

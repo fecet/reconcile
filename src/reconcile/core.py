@@ -147,6 +147,7 @@ class Pool:
             self._deps[cls] = result
         return self._deps[cls]
 
+
 class ReconcileSession:
     def __init__(self, participants: tuple[Any, ...]) -> None:
         self.participants = participants
@@ -189,10 +190,15 @@ class ReconcileSession:
             raise
         return self.participants
 
-    def _build_slots(self, obj: BaseModel, cls: type[BaseModel]) -> dict[str, FieldSlot]:
+    def _build_slots(
+        self, obj: BaseModel, cls: type[BaseModel]
+    ) -> dict[str, FieldSlot]:
         by_field: dict[str, list[Dependency]] = {}
         for dep in self.pool.deps(cls):
-            if dep.field_name is not None and dep.field_name not in obj.model_fields_set:
+            if (
+                dep.field_name is not None
+                and dep.field_name not in obj.model_fields_set
+            ):
                 by_field.setdefault(dep.field_name, []).append(dep)
         return {
             fname: FieldSlot(
@@ -247,7 +253,9 @@ class ReconcileSession:
             for field_name in set(fields) | obj.model_fields_set:
                 fi = cls.model_fields[field_name]
                 if fi.metadata:
-                    ta: TypeAdapter[Any] = TypeAdapter(typing.Annotated[fi.annotation, *fi.metadata])
+                    ta: TypeAdapter[Any] = TypeAdapter(
+                        typing.Annotated[fi.annotation, *fi.metadata]
+                    )
                     ta.validate_python(getattr(obj, field_name))
 
     def demote_models(self) -> None:
@@ -264,10 +272,9 @@ class ReconcileSession:
 
     def _cycle_error(self, slot: FieldSlot) -> ValueError:
         stack = [s for s, r in self.resolved.items() if r is RESOLVING]
-        path = stack[stack.index(slot):] + [slot]
+        path = stack[stack.index(slot) :] + [slot]
         rendered = " -> ".join(
-            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}"
-            for s in path
+            f"{self.owner_cls[id(s.owner)].__name__}.{s.field_name}" for s in path
         )
         return ValueError(f"Cycle detected: {rendered}")
 

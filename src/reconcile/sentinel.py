@@ -80,7 +80,6 @@ def _get_parent_frame():
     try:
         return _sys._getframe(2)
     except (AttributeError, ValueError):
-
         global _get_parent_frame
 
         def _get_parent_frame():
@@ -90,7 +89,6 @@ def _get_parent_frame():
                 try:
                     return _sys.exc_info()[2].tb_frame.f_back.f_back
                 except Exception:
-
                     global _get_parent_frame
 
                     def _get_parent_frame():

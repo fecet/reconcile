@@ -57,6 +57,7 @@ def _relax_init_args(func: FuncDef, dep_names: set[str]) -> None:
                 arg.initializer = EllipsisExpr()
     # CallableType carries its own arg_kinds used for actual type checking
     from mypy.types import CallableType
+
     if isinstance(func.type, CallableType):
         for i, name in enumerate(func.type.arg_names):
             if name in dep_names and func.type.arg_kinds[i] == ARG_NAMED:
@@ -78,23 +79,29 @@ def _patch_init(ctx: ClassDefContext, dep_names: set[str]) -> None:
 
 
 class ReconcilePlugin(PydanticPlugin):
-    def get_base_class_hook(self, fullname: str) -> Callable[[ClassDefContext], None] | None:
+    def get_base_class_hook(
+        self, fullname: str
+    ) -> Callable[[ClassDefContext], None] | None:
         pydantic_hook = super().get_base_class_hook(fullname)
         if pydantic_hook is not None:
+
             def combined(ctx: ClassDefContext) -> None:
                 pydantic_hook(ctx)
                 dep_names = _find_dep_field_names(ctx)
                 if dep_names:
                     _patch_init(ctx, dep_names)
+
             return combined
         sym = self.lookup_fully_qualified(fullname)
         if sym and sym.node and hasattr(sym.node, "mro"):
             for base in sym.node.mro:
                 if base.fullname == "pydantic.main.BaseModel":
+
                     def fallback(ctx: ClassDefContext) -> None:
                         dep_names = _find_dep_field_names(ctx)
                         if dep_names:
                             _patch_init(ctx, dep_names)
+
                     return fallback
         return None
 
