@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/fecet/reconcile/compare/reconcile-v0.2.2...reconcile-v0.3.0) (2026-03-19)
+
+
+### Features
+
+* auto-discover explicitly-provided BaseModel fields as participants (hitchhike) ([b13d9e0](https://github.com/fecet/reconcile/commit/b13d9e0081553083a67fadcad8f2b6f3f5cd7a1a))
+* resolve string annotations via pool namespace ([38ab3e3](https://github.com/fecet/reconcile/commit/38ab3e3b51f54b9fdb209e1d8efb39c4465dd0df))
+* support multiple providers per field with fallback chain ([7060470](https://github.com/fecet/reconcile/commit/706047016a998546d099eedb57e54d95dce8e072))
+
+
+### Bug Fixes
+
+* multiple [@dependency](https://github.com/dependency) on same Field(default_factory=...) crashes ([45bd385](https://github.com/fecet/reconcile/commit/45bd385dd1fc7554a9d0e0f99cdfd0b5fa25ec79))
+
+
+### Documentation
+
+* add README explaining two-phase reconcile model ([fe280d2](https://github.com/fecet/reconcile/commit/fe280d2f73afd67772110e9f31e3d19b4de107d4))
+
 ## [0.2.2](https://github.com/fecet/reconcile/compare/reconcile-v0.2.1...reconcile-v0.2.2) (2026-03-09)
 
 
