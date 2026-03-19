@@ -2,6 +2,7 @@
 
 import inspect
 import typing
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -152,9 +153,9 @@ class ReconcileSession:
         all_objs = list(participants)
         seen_ids = {id(obj) for obj in all_objs}
         # BFS: discover explicitly-provided BaseModel fields (hitchhike)
-        queue = [obj for obj in all_objs if isinstance(obj, BaseModel)]
+        queue = deque(obj for obj in all_objs if isinstance(obj, BaseModel))
         while queue:
-            obj = queue.pop(0)
+            obj = queue.popleft()
             for field_name in obj.model_fields_set:
                 value = obj.__dict__.get(field_name)
                 if isinstance(value, BaseModel) and id(value) not in seen_ids:
