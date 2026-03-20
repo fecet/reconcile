@@ -22,6 +22,7 @@ tests/
 - `TestResolution` — 正常解析路径
 - `TestErrors` — 预期失败与错误信息
 - `TestFeatures` — 单项功能验证
+- `TestHitchhike` — 搭便车发现与显式优先
 - `TestCircular` — 循环依赖收敛
 
 **辅助函数 `reconcile_case`** 封装了 reconcile 调用并返回具名 participant；后续通过 `.expect(workflow={...}, training={...})` 按名字声明预期。
@@ -34,5 +35,6 @@ tests/
 | `AdamWOptimizerSpec` | cross_object, validator |
 | `WorkflowSpec` | cross_object, manual_override, model_fields_and_dump, nested_model_field_resolution, field_default_as_fallback |
 | `BaseLoss` / `MSELoss` / `MAELoss` | subclass_resolution, subclass_ambiguity |
+| `CompositeLoss(BaseLoss)` | composite_hitchhike_prefers_explicit |
 | `CrossEntropyLoss(BaseLoss)` | multi_participant |
-| `NeedsLoss` | subclass_ambiguity |
+| `NeedsLoss` | subclass_ambiguity, composite_hitchhike_prefers_explicit |

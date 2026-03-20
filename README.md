@@ -132,7 +132,7 @@ job = JobSpec(training=TrainingSpec())
 reconcile(job)  # TrainingSpec hitchhikes into the pool
 ```
 
-内部实现、维护约定和最新流程图见 [AGENTS.md](./AGENTS.md)。
+内部实现、维护约定和流程图见 [AGENTS.md](./AGENTS.md)。
 
 ## 语义保证
 
@@ -145,6 +145,7 @@ reconcile(job)  # TrainingSpec hitchhikes into the pool
 - 类型解析支持按实例类型和继承关系匹配
 - 多个候选同时匹配同一类型时会报歧义错误
 - 构造时显式传入的 BaseModel 字段自动作为 participant 参与解析（hitchhike）
+- 搭便车对象与显式传入的 participant 类型冲突时，显式 participant 优先
 - 一个字段可以有多个 provider，按声明顺序尝试，第一个能 resolve 的赢
 - 字段级循环依赖会在 `reconcile()` 期间按实际访问路径报错
 - 字段约束按 complete state 的最终值校验

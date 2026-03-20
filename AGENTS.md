@@ -9,7 +9,7 @@
 
 - 对外语义以 `README.md` 为准
 - 内部结构和维护约定以本文件为准
-- 测试组织和共享模型约定以 `tests/README.md` 为准
+- 测试组织和共享模型约定以 `tests/AGENTS.md` 为准
 - 运行测试使用 `pixi run test`
 - 字段 provider 的方法名通常直接用 `_`
 - cross-object validator 使用描述性英文名称
@@ -39,20 +39,20 @@ reconcile(*participants)
         ▼
 ┌──────────────────────────────┐
 │      ReconcileSession        │
-│ - pool                       │
-│ - states: State[]            │
-│ - resolution_stack           │
+│ - _providers: ProviderIndex  │
+│ - _states: dict[id, State]   │
+│ - _resolution_stack          │
 └──────────────┬───────────────┘
                │
       ┌────────┴────────┐
       ▼                 ▼
 ┌──────────────┐   ┌──────────────────┐
-│     Pool     │   │      State       │
-│ type -> obj  │   │ - obj            │
-│ resolution   │   │ - cls            │
-└──────────────┘   │ - slots{}        │
-                   └────────┬─────────┘
-                            │
+│ProviderIndex │   │      State       │
+│ - _discover  │   │ - obj            │
+│ - _index     │   │ - cls            │
+│ - resolve    │   │ - slots{}        │
+│ - try_inject │   └────────┬─────────┘
+└──────────────┘            │
                             ▼
                    ┌──────────────────┐
                    │    FieldSlot     │
@@ -70,10 +70,10 @@ _deps(cls) (cached):
 
 职责分层：
 
-- `Pool`
-  只负责按类型解析 participant，并处理歧义错误
+- `ProviderIndex`
+  发现搭便车对象、建立 type → candidates 索引、按类型解析 participant（显式参与者优先于搭便车者）、注入调用
 - `ReconcileSession`
-  只负责一次 `reconcile()` 调用的全局流程和环检测状态
+  只负责一次 `reconcile()` 调用的状态构建、proxy 生命周期、流程编排和验证
 - `State`
   负责把 `obj`、原始 `cls` 和待解析 `slots` 绑成具名状态，避免位置式 tuple
 - `FieldSlot`
@@ -89,12 +89,12 @@ reconcile(*participants)
         ▼
 ReconcileSession.__init__()
         │
-        ├── hitchhike discovery (BFS)
-        │     └── scan model_fields_set for BaseModel instances
+        ├── ProviderIndex(participants)
+        │     ├── _discover(): BFS 搭便车
+        │     ├── build type -> [obj] index
+        │     └── primary_ids: 显式参与者优先
         │
-        ├── build Pool(all discovered participants)
-        │
-        └── build State for each BaseModel
+        └── build State for each BaseModel in all_objs
         │
         ▼
 ReconcileSession.run()
@@ -106,16 +106,14 @@ ReconcileSession.run()
         ├── resolve phase
         │     └── _resolve_slot(slot)
         │
-        ├── commit phase
-        │     └── write resolved value or fallback default
-        │
-        ├── demote phase
+        ├── commit + demote phase
+        │     ├── write resolved value or fallback default
         │     └── owner.__class__ = owner_cls
         │
-        ├── run_cross_validators()
+        ├── _run_cross_validators()
         │     └── cached _deps(cls)[1]
         │
-        ├── validate_fields()
+        ├── _validate_fields()
         │     ├── required field check
         │     └── final TypeAdapter validation
         │
@@ -142,25 +140,25 @@ ProxyClass.__getattr__(name)
         │     └── no  -> cls.__getattr__
         │
         ├── slot.result is RESOLVING ?
-        │     └── yes -> Cycle detected from resolution_stack
+        │     └── yes -> Cycle detected from _resolution_stack
         │
         ├── slot.result = RESOLVING
-        ├── push slot to resolution_stack
+        ├── push slot to _resolution_stack
         │
-        ├── pool.try_call(provider)
+        ├── _providers.try_inject(provider)
         │     └── provider may recursively read other dep fields
         │
         ├── slot.result = value | UNRESOLVED
         │
         └── finally
-              └── pop slot from resolution_stack
+              └── pop slot from _resolution_stack
 ```
 
 ## 维护约定
 
 - 如果修改公开语义，同时更新 `README.md`
 - 如果修改内部结构或流程，同时更新本文件
-- 如果修改测试组织方式或共享模型，同时更新 `tests/README.md`
+- 如果修改测试组织方式或共享模型，同时更新 `tests/AGENTS.md`
 - 如果修改字段解析、环检测、fallback、手动覆盖优先级，必须补测试
 - 如果只是内部重构，不应改变 `README.md` 的公开语义描述
 
@@ -175,5 +173,5 @@ pixi run test
 ```text
 公开 API / 语义变化   ──► README.md
 内部实现 / 维护约定   ──► AGENTS.md
-测试结构 / 模型复用   ──► tests/README.md
+测试结构 / 模型复用   ──► tests/AGENTS.md
 ```

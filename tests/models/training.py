@@ -30,6 +30,11 @@ class CrossEntropyLoss(BaseLoss):
         return f"ce_loss(ignore_index={self.ignore_index})"
 
 
+class CompositeLoss(BaseLoss):
+    mse: MSELoss
+    mae: MAELoss
+
+
 class AdamWOptimizerSpec(BaseModel):
     lr: float = 1e-3
     betas: tuple[float, float] = (0.9, 0.999)

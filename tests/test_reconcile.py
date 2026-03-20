@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from models.training import (
     AdamWOptimizerSpec,
+    CompositeLoss,
     CrossEntropyLoss,
     MAELoss,
     MSELoss,
@@ -345,15 +346,25 @@ class TestHitchhike:
         (w, t) = reconcile(workflow, training)
         assert w.batch_size == 500
 
-    def test_hitchhike_conflict(self):
+    def test_hitchhike_yields_to_explicit(self):
         workflow = WorkflowSpec(
             training=TrainingSpec(num_steps=100),
             num_steps=100,
             lr=0.01,
         )
-        other_training = TrainingSpec(num_steps=200)
-        with pytest.raises(TypeError, match="Ambiguous"):
-            reconcile(workflow, other_training)
+        explicit_training = TrainingSpec(num_steps=200)
+        (w, t) = reconcile(workflow, explicit_training)
+        assert t is explicit_training
+        assert w.batch_size == 200  # resolved via explicit, not hitchhiker
+        assert w.training.num_steps == 100  # manually set, unchanged
+
+    def test_composite_hitchhike_prefers_explicit(self):
+        composite = CompositeLoss(mse=MSELoss(), mae=MAELoss())
+        needs = NeedsLoss()
+        (needs, composite) = reconcile(needs, composite)
+        # MSELoss and MAELoss hitchhike via composite's fields
+        # CompositeLoss is explicit, wins for BaseLoss — no ambiguity
+        assert needs.name == "CompositeLoss"
 
 
 class TestCircular:
