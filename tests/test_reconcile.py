@@ -347,16 +347,14 @@ class TestHitchhike:
         assert w.batch_size == 500
 
     def test_hitchhike_yields_to_explicit(self):
-        workflow = WorkflowSpec(
-            training=TrainingSpec(num_steps=100),
-            num_steps=100,
-            lr=0.01,
+        workflow = WorkflowSpec(training=TrainingSpec(num_steps=100))
+        (w, t, o) = reconcile(
+            workflow, TrainingSpec(num_steps=200), AdamWOptimizerSpec()
         )
-        explicit_training = TrainingSpec(num_steps=200)
-        (w, t) = reconcile(workflow, explicit_training)
-        assert t is explicit_training
-        assert w.batch_size == 200  # resolved via explicit, not hitchhiker
-        assert w.training.num_steps == 100  # manually set, unchanged
+        # TrainingSpec(100) hitchhikes, TrainingSpec(200) is explicit
+        assert w.num_steps == 200  # derived from explicit, not hitchhiker
+        assert w.batch_size == 200
+        assert w.training.num_steps == 100  # manually set field unchanged
 
     def test_composite_hitchhike_prefers_explicit(self):
         composite = CompositeLoss(mse=MSELoss(), mae=MAELoss())
