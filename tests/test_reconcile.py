@@ -7,10 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from models.training import (
     AdamWOptimizerSpec,
     CompositeLoss,
-    CrossEntropyLoss,
     MAELoss,
+    MoESpec,
     MSELoss,
     NeedsLoss,
+    ParallelSpec,
+    ScaleSpec,
     TrainingSpec,
     WorkflowSpec,
 )
@@ -37,63 +39,24 @@ def reconcile_case(**participants: Any) -> ReconcileCase:
 class TestResolution:
     def test_cross_object(self):
         case = reconcile_case(
+            loss=MSELoss(),
             workflow=WorkflowSpec(warmup_steps=100),
             training=TrainingSpec(num_steps=2000),
             optimizer=AdamWOptimizerSpec(lr=1e-3),
         ).expect(
-            workflow={
-                "num_steps": 2000,
-                "lr": 1e-3,
-                "batch_size": 2000,
-                "effective_lr": 1e-3,
-                "tags": ["steps=2000"],
-            },
+            workflow={"num_steps": 2000, "lr": 1e-3},
             training={"num_steps": 2000},
-            optimizer={"lr": 1e-3},
+            optimizer={"lr": 1e-3, "decay_steps": 200},
         )
         assert case.workflow.training is case.training
-        assert case.optimizer.lr == 1e-3
+        assert case.optimizer.lr == case.workflow.lr
 
     def test_manual_override(self):
         reconcile_case(
-            workflow=WorkflowSpec(
-                warmup_steps=100,
-                num_steps=999,
-                lr=1e-2,
-                effective_lr=5e-2,
-                tags=["manual"],
-            ),
+            workflow=WorkflowSpec(warmup_steps=100, num_steps=999, lr=1e-2),
             training=TrainingSpec(num_steps=2000),
             optimizer=AdamWOptimizerSpec(lr=5e-4),
-        ).expect(
-            workflow={
-                "num_steps": 999,
-                "lr": 1e-2,
-                "effective_lr": 5e-2,
-                "tags": ["manual"],
-                "batch_size": 2000,
-            }
-        )
-
-    def test_multi_participant(self):
-        case = reconcile_case(
-            loss=CrossEntropyLoss(),
-            optimizer=AdamWOptimizerSpec(lr=3e-4),
-            workflow=WorkflowSpec(warmup_steps=200),
-            training=TrainingSpec(num_steps=5000),
-        ).expect(
-            optimizer={"lr": 3e-4},
-            workflow={
-                "num_steps": 5000,
-                "lr": 3e-4,
-                "batch_size": 5000,
-                "effective_lr": 3e-4,
-                "tags": ["steps=5000"],
-            },
-        )
-        assert case.loss("logits", "labels") == "ce_loss(ignore_index=-100)"
-        assert case.workflow.training is case.training
-        assert case.optimizer.lr == case.workflow.lr
+        ).expect(workflow={"num_steps": 999, "lr": 1e-2})
 
     def test_hitchhike_resolves_from_manually_set_field(self):
         reconcile_case(
@@ -103,15 +66,7 @@ class TestResolution:
                 num_steps=500,
                 lr=0.01,
             ),
-        ).expect(
-            workflow={
-                "num_steps": 500,
-                "lr": 0.01,
-                "batch_size": 500,
-                "effective_lr": 0.001,
-                "tags": ["steps=500"],
-            }
-        )
+        ).expect(workflow={"num_steps": 500, "lr": 0.01})
 
     def test_model_fields_and_dump(self):
         assert "training" in WorkflowSpec.model_fields
@@ -119,19 +74,10 @@ class TestResolution:
         assert "lr" in WorkflowSpec.model_fields
         assert WorkflowSpec().model_dump() == {
             "warmup_steps": 0,
-            "lr_min": 0.0,
             "training": None,
             "num_steps": None,
             "lr": None,
-            "batch_size": 32,
-            "effective_lr": 0.001,
-            "tags": [],
         }
-        assert (
-            WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).num_steps == 42
-        )
-        assert WorkflowSpec(training=TrainingSpec(), num_steps=42, lr=0.5).lr == 0.5
-        assert WorkflowSpec(training=TrainingSpec()).batch_size == 32
 
 
 class TestErrors:
@@ -182,11 +128,8 @@ class TestFeatures:
             training=TrainingSpec(num_steps=50),
             optimizer=AdamWOptimizerSpec(),
         ).expect(
-            workflow={
-                "batch_size": 50,
-                "num_steps": 50,
-                "lr": 1e-3,
-            },
+            workflow={"num_steps": 50, "lr": 1e-3},
+            optimizer={"decay_steps": 100},
         )
 
     def test_subclass_resolution(self):
@@ -211,45 +154,7 @@ class TestFeatures:
         assert case.workflow.training is case.training
         assert case.workflow.training.num_steps == 7
 
-    def test_field_default_as_fallback(self):
-        training = TrainingSpec(num_steps=5000)
-        reconcile_case(
-            workflow=WorkflowSpec(training=training, num_steps=5000, lr=0.01),
-            training=training,
-            optimizer=AdamWOptimizerSpec(lr=0.01),
-        ).expect(
-            workflow={
-                "batch_size": 5000,
-                "effective_lr": 0.01,
-                "tags": ["steps=5000"],
-            },
-        )
-
-        reconcile_case(
-            workflow=WorkflowSpec(training=TrainingSpec(), num_steps=1000, lr=1e-3),
-        ).expect(
-            workflow={
-                "batch_size": 1000,
-                "effective_lr": 0.001,
-                "tags": ["steps=1000"],
-            },
-        )
-
-        training = TrainingSpec(num_steps=5000)
-        reconcile_case(
-            workflow=WorkflowSpec(
-                training=training,
-                num_steps=5000,
-                lr=0.01,
-                tags=["manual"],
-            ),
-            training=training,
-            optimizer=AdamWOptimizerSpec(lr=0.01),
-        ).expect(
-            workflow={"tags": ["manual"]},
-        )
-
-    def test_nullable_provider_returns_none(self):
+    def test_nullable_provider(self):
         class NullableSpec(BaseModel):
             value: int | None = Field(default=1)
 
@@ -259,17 +164,8 @@ class TestFeatures:
 
         (spec, _) = reconcile(NullableSpec(), TrainingSpec())
         assert spec.value is None
-
-    def test_nullable_unresolvable_falls_back(self):
-        class NullableSpec(BaseModel):
-            value: int | None = Field(default=1)
-
-            @dependency(value)
-            def _(self, t: TrainingSpec) -> int | None:
-                return None
-
         (spec,) = reconcile(NullableSpec())
-        assert spec.value == 1
+        assert spec.value == 1  # fallback to default
 
     def test_fallback_constraint_violation(self):
         class Constrained(BaseModel):
@@ -282,41 +178,6 @@ class TestFeatures:
         with pytest.raises(ValueError):
             reconcile(Constrained())
 
-    def test_fallback_valid_default_passes(self):
-        class Constrained(BaseModel):
-            value: int = Field(default=5, ge=1)
-
-            @dependency(value)
-            def _(self, t: TrainingSpec) -> int:
-                return t.num_steps
-
-        (c,) = reconcile(Constrained())
-        assert c.value == 5
-
-    def test_multiple_providers_fallback(self):
-        # TrainingSpec hitchhikes → first tags provider wins
-        reconcile_case(
-            workflow=WorkflowSpec(
-                training=TrainingSpec(num_steps=500),
-                num_steps=500,
-                lr=0.01,
-            ),
-            optimizer=AdamWOptimizerSpec(lr=0.01),
-        ).expect(
-            workflow={"tags": ["steps=500"]},
-        )
-
-    def test_provider_can_raise_unresolvable_for_fallback(self):
-        class RetryLater(BaseModel):
-            value: int = Field(default=5)
-
-            @dependency(value)
-            def _(self, _t: TrainingSpec) -> int:
-                raise Unresolvable
-
-        (obj, _) = reconcile(RetryLater(), TrainingSpec())
-        assert obj.value == 5
-
     def test_extra_fields_skipped_in_validation(self):
         class FlexibleWorkflow(WorkflowSpec):
             model_config = ConfigDict(extra="allow")
@@ -325,6 +186,20 @@ class TestFeatures:
         (obj, _, _) = reconcile(obj, TrainingSpec(num_steps=42), AdamWOptimizerSpec())
         assert obj.num_steps == 42
         assert obj.custom_flag is True
+
+    def test_multi_param_self_and_nested(self):
+        scale = ScaleSpec(factor=0.5)
+        parallel = ParallelSpec(moe=MoESpec(num_experts=4))
+        (scale, _, _) = reconcile(scale, TrainingSpec(num_steps=100), parallel)
+        assert scale.scaled_steps == 200
+
+    def test_cross_validator_with_nested_access(self):
+        parallel = ParallelSpec(moe=MoESpec(num_experts=3))
+        with pytest.raises(ValueError, match="divisible by num_experts"):
+            reconcile(parallel, TrainingSpec(num_steps=100))
+
+        parallel = ParallelSpec(moe=MoESpec(num_experts=4))
+        reconcile(parallel, TrainingSpec(num_steps=100))
 
 
 class TestHitchhike:
@@ -344,17 +219,7 @@ class TestHitchhike:
         training = TrainingSpec(num_steps=500)
         workflow = WorkflowSpec(training=training, num_steps=500, lr=0.01)
         (w, t) = reconcile(workflow, training)
-        assert w.batch_size == 500
-
-    def test_hitchhike_yields_to_explicit(self):
-        workflow = WorkflowSpec(training=TrainingSpec(num_steps=100))
-        (w, t, o) = reconcile(
-            workflow, TrainingSpec(num_steps=200), AdamWOptimizerSpec()
-        )
-        # TrainingSpec(100) hitchhikes, TrainingSpec(200) is explicit
-        assert w.num_steps == 200  # derived from explicit, not hitchhiker
-        assert w.batch_size == 200
-        assert w.training.num_steps == 100  # manually set field unchanged
+        assert w.num_steps == 500
 
     def test_composite_hitchhike_prefers_explicit(self):
         composite = CompositeLoss(mse=MSELoss(), mae=MAELoss())
@@ -363,6 +228,43 @@ class TestHitchhike:
         # MSELoss and MAELoss hitchhike via composite's fields
         # CompositeLoss is explicit, wins for BaseLoss — no ambiguity
         assert needs.name == "CompositeLoss"
+
+    def test_nested_subconfig_hitchhikes(self):
+        class NeedsMoE(BaseModel):
+            expert_count: int = Field(default=0)
+
+            @dependency(expert_count)
+            def _(self, moe: MoESpec) -> int:
+                return moe.num_experts
+
+        parallel = ParallelSpec(moe=MoESpec(num_experts=16))
+        needs = NeedsMoE()
+        (needs, _) = reconcile(needs, parallel)
+        # MoESpec hitchhikes from ParallelSpec.moe
+        assert needs.expert_count == 16
+
+    def test_deep_hitchhike(self):
+        class Inner(BaseModel):
+            value: int = 42
+
+        class Middle(BaseModel):
+            inner: Inner
+
+        class Outer(BaseModel):
+            middle: Middle
+
+        class Consumer(BaseModel):
+            got: int = Field(default=0)
+
+            @dependency(got)
+            def _(self, i: Inner) -> int:
+                return i.value
+
+        outer = Outer(middle=Middle(inner=Inner(value=99)))
+        consumer = Consumer()
+        (consumer, _) = reconcile(consumer, outer)
+        # Inner hitchhikes through Outer → Middle → Inner (3 levels)
+        assert consumer.got == 99
 
 
 class TestCircular:

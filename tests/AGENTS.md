@@ -32,9 +32,10 @@ tests/
 | 模型 | 服务测试 |
 |------|---------|
 | `TrainingSpec` | 几乎所有测试的依赖源 |
-| `AdamWOptimizerSpec` | cross_object, validator |
-| `WorkflowSpec` | cross_object, manual_override, model_fields_and_dump, nested_model_field_resolution, field_default_as_fallback |
+| `AdamWOptimizerSpec` | cross_object, validator, field_constraints (decay_steps: Unresolvable fallback + ge constraint) |
+| `WorkflowSpec` | cross_object, manual_override, model_fields_and_dump, nested_model_field_resolution |
 | `BaseLoss` / `MSELoss` / `MAELoss` | subclass_resolution, subclass_ambiguity |
 | `CompositeLoss(BaseLoss)` | composite_hitchhike_prefers_explicit |
 | `CrossEntropyLoss(BaseLoss)` | multi_participant |
+| `ScaleSpec` | multi_param_self_and_nested (multi-param injection + self field + nested sub-config) |
 | `NeedsLoss` | subclass_ambiguity, composite_hitchhike_prefers_explicit |
