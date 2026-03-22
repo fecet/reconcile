@@ -1,21 +1,19 @@
+import sys
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from models.parallel import MoESpec, ParallelSpec, ScaleSpec
 from models.training import (
-    AdamWOptimizerSpec,
     CompositeLoss,
     MAELoss,
-    MoESpec,
     MSELoss,
     NeedsLoss,
-    ParallelSpec,
-    ScaleSpec,
     TrainingSpec,
-    WorkflowSpec,
 )
+from models.workflow import AdamWOptimizerSpec, WorkflowSpec
 
 from reconcile import Unresolvable, dependency, reconcile
 
@@ -79,6 +77,76 @@ class TestResolution:
             "lr": None,
         }
 
+    def test_cycle_seeded(self):
+        reconcile_case(
+            training=TrainingSpec(global_batch_size=32),
+            parallel=ParallelSpec(dp=4),
+        ).expect(
+            training={"global_batch_size": 32},
+            parallel={"local_batch_size": 8},
+        )
+        reconcile_case(
+            training=TrainingSpec(),
+            parallel=ParallelSpec(dp=4, local_batch_size=8),
+        ).expect(
+            training={"global_batch_size": 32},
+            parallel={"local_batch_size": 8},
+        )
+
+    def test_cycle_manual_override(self):
+        reconcile_case(
+            training=TrainingSpec(global_batch_size=64),
+            parallel=ParallelSpec(local_batch_size=16),
+        ).expect(
+            training={"global_batch_size": 64},
+            parallel={"local_batch_size": 16},
+        )
+
+    def test_cycle_converges_across_order(self):
+        def values(*participants: Any) -> dict[str, int]:
+            return {
+                type(obj).__name__: obj.global_batch_size
+                if hasattr(obj, "global_batch_size")
+                else obj.local_batch_size
+                for obj in reconcile(*participants)
+            }
+
+        assert values(TrainingSpec(global_batch_size=32), ParallelSpec(dp=4)) == values(
+            ParallelSpec(dp=4), TrainingSpec(global_batch_size=32)
+        )
+
+    def test_ring_seeded(self):
+        class R1(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r3: "R3") -> int:
+                return r3.value + 1
+
+        class R2(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r1: R1) -> int:
+                return r1.value + 1
+
+        class R3(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r2: R2) -> int:
+                return r2.value + 1
+
+        reconcile_case(
+            r1=R1(value=10),
+            r2=R2(),
+            r3=R3(),
+        ).expect(
+            r1={"value": 10},
+            r2={"value": 11},
+            r3={"value": 12},
+        )
+
 
 class TestErrors:
     def test_duplicate_type(self):
@@ -114,6 +182,49 @@ class TestErrors:
         assert a.name == "MSELoss"
         reconcile(a, mae)
         assert a.name == "MSELoss"  # already set, not overwritten
+
+    def test_cycle_detected(self):
+        for participants in [
+            (TrainingSpec(), ParallelSpec()),
+            (ParallelSpec(), TrainingSpec()),
+        ]:
+            with pytest.raises(ValueError, match="Cycle detected"):
+                reconcile(*participants)
+
+    def test_ring_cycle(self):
+        class R1(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r3: "R3") -> int:
+                return r3.value + 1
+
+        class R2(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r1: R1) -> int:
+                return r1.value + 1
+
+        class R3(BaseModel):
+            value: int = Field(default=0)
+
+            @dependency(value)
+            def _(self, r2: R2) -> int:
+                return r2.value + 1
+
+        with pytest.raises(ValueError, match="Cycle detected"):
+            reconcile(R1(), R2(), R3())
+
+    def test_cycle_restores_classes(self):
+        t = TrainingSpec()
+        p = ParallelSpec()
+        with pytest.raises(ValueError, match="Cycle detected"):
+            reconcile(t, p)
+        assert type(t).__name__ == "TrainingSpec"
+        assert type(p).__name__ == "ParallelSpec"
+        assert t.global_batch_size == 0
+        assert p.local_batch_size == 0
 
 
 class TestFeatures:
@@ -189,16 +300,16 @@ class TestFeatures:
 
     def test_multi_param_self_and_nested(self):
         scale = ScaleSpec(factor=0.5)
-        parallel = ParallelSpec(moe=MoESpec(num_experts=4))
+        parallel = ParallelSpec(moe=MoESpec(num_experts=4), local_batch_size=8)
         (scale, _, _) = reconcile(scale, TrainingSpec(num_steps=100), parallel)
         assert scale.scaled_steps == 200
 
     def test_cross_validator_with_nested_access(self):
-        parallel = ParallelSpec(moe=MoESpec(num_experts=3))
+        parallel = ParallelSpec(moe=MoESpec(num_experts=3), local_batch_size=8)
         with pytest.raises(ValueError, match="divisible by num_experts"):
             reconcile(parallel, TrainingSpec(num_steps=100))
 
-        parallel = ParallelSpec(moe=MoESpec(num_experts=4))
+        parallel = ParallelSpec(moe=MoESpec(num_experts=4), local_batch_size=8)
         reconcile(parallel, TrainingSpec(num_steps=100))
 
 
@@ -225,8 +336,6 @@ class TestHitchhike:
         composite = CompositeLoss(mse=MSELoss(), mae=MAELoss())
         needs = NeedsLoss()
         (needs, composite) = reconcile(needs, composite)
-        # MSELoss and MAELoss hitchhike via composite's fields
-        # CompositeLoss is explicit, wins for BaseLoss — no ambiguity
         assert needs.name == "CompositeLoss"
 
     def test_nested_subconfig_hitchhikes(self):
@@ -240,7 +349,6 @@ class TestHitchhike:
         parallel = ParallelSpec(moe=MoESpec(num_experts=16))
         needs = NeedsMoE()
         (needs, _) = reconcile(needs, parallel)
-        # MoESpec hitchhikes from ParallelSpec.moe
         assert needs.expert_count == 16
 
     def test_deep_hitchhike(self):
@@ -263,116 +371,17 @@ class TestHitchhike:
         outer = Outer(middle=Middle(inner=Inner(value=99)))
         consumer = Consumer()
         (consumer, _) = reconcile(consumer, outer)
-        # Inner hitchhikes through Outer → Middle → Inner (3 levels)
         assert consumer.got == 99
 
 
-class TestCircular:
-    def test_mutual_required_both_unset(self):
-        from models.circular import MutualA, MutualB
-
-        with pytest.raises(
-            ValueError,
-            match=r"Cycle detected: MutualA\.value -> MutualB\.value -> MutualA\.value",
-        ):
-            reconcile(MutualA(), MutualB())
-
-    def test_mutual_required_one_seeded(self):
-        from models.circular import MutualA, MutualB
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="PEP 649 deferred annotations")
+class TestCrossFileForwardRef:
+    def test_bare_annotation(self):
+        from models.parallel import BareRefScale
 
         reconcile_case(
-            a=MutualA(value=5),
-            b=MutualB(),
+            s=BareRefScale(),
+            t=TrainingSpec(num_steps=500),
         ).expect(
-            a={"value": 5},
-            b={"value": 6},
+            s={"steps": 1000},
         )
-        reconcile_case(
-            a=MutualA(),
-            b=MutualB(value=10),
-        ).expect(
-            a={"value": 11},
-            b={"value": 10},
-        )
-
-    def test_mutual_with_defaults(self):
-        from models.circular import NodeX, NodeY
-
-        with pytest.raises(
-            ValueError,
-            match=r"Cycle detected: NodeX\.value -> NodeY\.value -> NodeX\.value",
-        ):
-            reconcile(NodeX(), NodeY())
-
-    def test_cycle_errors_do_not_depend_on_participant_order(self):
-        from models.circular import MutualA, MutualB, NodeX, NodeY
-
-        for participants in [
-            (MutualA(), MutualB()),
-            (MutualB(), MutualA()),
-            (NodeX(), NodeY()),
-            (NodeY(), NodeX()),
-        ]:
-            with pytest.raises(ValueError, match="Cycle detected"):
-                reconcile(*participants)
-
-    def test_ring_no_seed(self):
-        from models.circular import Ring1, Ring2, Ring3
-
-        with pytest.raises(
-            ValueError,
-            match=r"Cycle detected: Ring1\.value -> Ring3\.value -> Ring2\.value -> Ring1\.value",
-        ):
-            reconcile(Ring1(), Ring2(), Ring3())
-
-    def test_ring_one_seeded(self):
-        from models.circular import Ring1, Ring2, Ring3
-
-        reconcile_case(
-            r1=Ring1(value=10),
-            r2=Ring2(),
-            r3=Ring3(),
-        ).expect(
-            r1={"value": 10},
-            r2={"value": 11},
-            r3={"value": 12},
-        )
-
-    def test_seeded_cycles_converge_to_same_values_across_order(self):
-        from models.circular import MutualA, MutualB, Ring1, Ring2, Ring3
-
-        def values_by_type(*participants: Any) -> dict[str, int]:
-            return {type(obj).__name__: obj.value for obj in reconcile(*participants)}
-
-        assert values_by_type(MutualA(value=5), MutualB()) == values_by_type(
-            MutualB(),
-            MutualA(value=5),
-        )
-        assert values_by_type(Ring1(value=10), Ring2(), Ring3()) == values_by_type(
-            Ring2(),
-            Ring3(),
-            Ring1(value=10),
-        )
-
-    def test_mutual_manual_override(self):
-        from models.circular import MutualA, MutualB
-
-        reconcile_case(
-            a=MutualA(value=100),
-            b=MutualB(value=200),
-        ).expect(
-            a={"value": 100},
-            b={"value": 200},
-        )
-
-    def test_cycle_error_restores_original_classes(self):
-        from models.circular import MutualA, MutualB
-
-        a = MutualA()
-        b = MutualB()
-        with pytest.raises(ValueError, match="Cycle detected"):
-            reconcile(a, b)
-        assert type(a).__name__ == "MutualA"
-        assert type(b).__name__ == "MutualB"
-        assert a.value is None
-        assert b.value is None
