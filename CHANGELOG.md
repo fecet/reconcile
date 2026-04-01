@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/fecet/reconcile/compare/reconcile-v0.3.1...reconcile-v0.4.0) (2026-03-22)
+
+
+### Features
+
+* export Unresolvable and simplify reconcile state ([583c53d](https://github.com/fecet/reconcile/commit/583c53d4f842456a9f3c86c425b8162c935a9db7))
+
+
+### Bug Fixes
+
+* **test:** make hitchhike_yields_to_explicit test realistic ([750ca6a](https://github.com/fecet/reconcile/commit/750ca6a3048f40327c57b60c9aca1d5006d03340))
+
 ## [0.3.1](https://github.com/fecet/reconcile/compare/reconcile-v0.3.0...reconcile-v0.3.1) (2026-03-19)
 
 
