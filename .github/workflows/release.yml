@@ -11,5 +11,5 @@ permissions:
 
 jobs:
   release:
-    uses: fecet/.github/.github/workflows/release-pixi.yml@main
+    uses: distsystem/.github/.github/workflows/release-pixi.yaml@main
     secrets: inherit
