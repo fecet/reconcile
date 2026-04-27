@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/fecet/reconcile/compare/reconcile-v0.4.0...reconcile-v0.5.0) (2026-04-26)
+
+
+### Features
+
+* **realize:** add realize() primitive for env-selected schema instantiation ([0703570](https://github.com/fecet/reconcile/commit/07035709a38140a50e24a5d21df3169e9ca4674b))
+
 ## [0.4.0](https://github.com/fecet/reconcile/compare/reconcile-v0.3.1...reconcile-v0.4.0) (2026-03-22)
 
 
