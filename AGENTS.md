@@ -24,10 +24,13 @@ reconcile/
 │   ├── __init__.py    <- public API re-export
 │   ├── core.py        <- 核心 reconcile 实现
 │   ├── mypy.py        <- mypy plugin
+│   ├── realize.py     <- env-selected config -> schema instance
 │   └── sentinel.py    <- sentinel helper
 ├── tests/
-│   ├── README.md      <- 测试组织约定
+│   ├── AGENTS.md      <- 测试组织约定
 │   ├── models/        <- 共享测试模型
+│   ├── realize_configs/ <- realize 测试夹具
+│   ├── test_realize.py
 │   └── test_reconcile.py
 ```
 
