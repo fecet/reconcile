@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/fecet/reconcile/compare/reconcile-v0.5.0...reconcile-v0.6.0) (2026-05-05)
+
+
+### Features
+
+* **realize:** support exporting config fields ([a8eccd6](https://github.com/fecet/reconcile/commit/a8eccd619f4a99ee93b4ac9afb83f1d9a66a1687))
+
 ## [0.5.0](https://github.com/fecet/reconcile/compare/reconcile-v0.4.0...reconcile-v0.5.0) (2026-04-26)
 
 
