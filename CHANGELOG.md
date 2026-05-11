@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/fecet/reconcile/compare/reconcile-v0.4.0...reconcile-v0.4.1) (2026-05-11)
+
+
+### Bug Fixes
+
+* discover nested BaseModel from default_factory ([#17](https://github.com/fecet/reconcile/issues/17)) ([6ad30aa](https://github.com/fecet/reconcile/commit/6ad30aad9ee080123909c9612511b06e753d5206))
+
 ## [0.4.0](https://github.com/fecet/reconcile/compare/reconcile-v0.3.1...reconcile-v0.4.0) (2026-03-22)
 
 
