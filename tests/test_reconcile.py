@@ -313,6 +313,45 @@ class TestFeatures:
         reconcile(parallel, TrainingSpec(num_steps=100))
 
 
+    def test_default_factory_nested_discovered(self):
+        """Nested BaseModel created by default_factory should be discovered and resolved."""
+
+        class Source(BaseModel):
+            name: str = "hello"
+
+        class Inner(BaseModel):
+            value: str | None = Field(default=None)
+
+            @dependency(value)
+            def _derive(self, s: Source) -> str:
+                return s.name
+
+        class Outer(BaseModel):
+            inner: Inner = Field(default_factory=Inner)
+
+        (outer, _) = reconcile(Outer(), Source())
+        assert outer.inner.value == "hello"
+
+    def test_default_factory_nested_not_overridden(self):
+        """Explicitly set nested field should not be clobbered by discovery."""
+
+        class Source(BaseModel):
+            name: str = "hello"
+
+        class Inner(BaseModel):
+            value: str | None = Field(default=None)
+
+            @dependency(value)
+            def _derive(self, s: Source) -> str:
+                return s.name
+
+        class Outer(BaseModel):
+            inner: Inner = Field(default_factory=Inner)
+
+        (outer, _) = reconcile(Outer(inner=Inner(value="custom")), Source())
+        assert outer.inner.value == "custom"
+
+
 class TestHitchhike:
     def test_hitchhike_not_returned(self):
         training = TrainingSpec(num_steps=500)

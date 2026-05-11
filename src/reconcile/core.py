@@ -138,7 +138,7 @@ class ProviderIndex:
         queue = deque(obj for obj in all_objs if isinstance(obj, BaseModel))
         while queue:
             obj = queue.popleft()
-            for field_name in obj.model_fields_set:
+            for field_name in type(obj).model_fields:
                 value = obj.__dict__.get(field_name)
                 if isinstance(value, BaseModel) and id(value) not in seen_ids:
                     seen_ids.add(id(value))
