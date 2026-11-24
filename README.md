@@ -158,3 +158,8 @@ reconcile(job)  # TrainingSpec hitchhikes into the pool
 - partial model 的 `model_dump()` 形状不是公开契约
 - `reconcile` 不是通用 DI 容器
 - 普通多分支 union 不会自动解析
+
+## 许可证
+
+项目原创代码采用 [Apache License 2.0](LICENSE)。
+`src/reconcile/sentinel.py` 引自 Tal Einat 的 [python-stdlib-sentinels](https://github.com/taleinat/python-stdlib-sentinels)，沿用[上游 MIT 许可证](LICENSES/sentinel-MIT.txt)。

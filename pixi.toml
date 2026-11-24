@@ -8,13 +8,15 @@ version = "0.4.0" # x-release-please-version
 [package]
 name = "reconcile"
 version = "0.4.0" # x-release-please-version
+license = "Apache-2.0 AND MIT"
+license-file = "LICENSE"
 
 [package.build]
 backend = { name = "pixi-build-python", version = "*" }
 
 [package.host-dependencies]
 python = ">=3.12"
-hatchling = "*"
+hatchling = ">=1.27"
 
 [package.run-dependencies]
 python = ">=3.12"
